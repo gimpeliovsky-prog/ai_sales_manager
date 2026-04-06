@@ -1,0 +1,154 @@
+[
+  {
+    "name": "create_order_requires_customer",
+    "tool_name": "create_sales_order",
+    "inputs": {
+      "items": [
+        {
+          "item_code": "ITEM-001",
+          "qty": 2
+        }
+      ]
+    },
+    "session": {
+      "stage": "confirm",
+      "last_intent": "confirm_order"
+    },
+    "tenant": {
+      "ai_policy": {
+        "allowed_tools": [
+          "create_sales_order"
+        ]
+      }
+    },
+    "user_text": "подтверждаю",
+    "expected": {
+      "blocked": true,
+      "error_contains": "buyer is identified"
+    }
+  },
+  {
+    "name": "create_order_requires_confirmation",
+    "tool_name": "create_sales_order",
+    "inputs": {
+      "items": [
+        {
+          "item_code": "ITEM-001",
+          "qty": 2
+        }
+      ]
+    },
+    "session": {
+      "stage": "confirm",
+      "erp_customer_id": "CUST-0001",
+      "last_intent": "confirm_order"
+    },
+    "tenant": {
+      "ai_policy": {
+        "allowed_tools": [
+          "create_sales_order"
+        ]
+      }
+    },
+    "user_text": "нужно 2 штуки",
+    "expected": {
+      "blocked": true,
+      "error_contains": "clear customer confirmation"
+    }
+  },
+  {
+    "name": "create_order_allowed_when_confirmed",
+    "tool_name": "create_sales_order",
+    "inputs": {
+      "items": [
+        {
+          "item_code": "ITEM-001",
+          "qty": 2
+        }
+      ]
+    },
+    "session": {
+      "stage": "confirm",
+      "erp_customer_id": "CUST-0001",
+      "last_intent": "confirm_order"
+    },
+    "tenant": {
+      "ai_policy": {
+        "allowed_tools": [
+          "create_sales_order"
+        ]
+      }
+    },
+    "user_text": "подтверждаю заказ",
+    "expected": {
+      "blocked": false
+    }
+  },
+  {
+    "name": "invoice_blocked_when_tool_disabled",
+    "tool_name": "create_invoice",
+    "inputs": {
+      "sales_order_name": "SO-001"
+    },
+    "session": {
+      "stage": "invoice",
+      "erp_customer_id": "CUST-0001",
+      "last_sales_order_name": "SO-001"
+    },
+    "tenant": {
+      "ai_policy": {
+        "allowed_tools": [
+          "send_sales_order_pdf"
+        ]
+      }
+    },
+    "user_text": "пришли счет",
+    "expected": {
+      "blocked": true,
+      "error_contains": "not enabled"
+    }
+  },
+  {
+    "name": "sales_history_requires_customer",
+    "tool_name": "get_buyer_sales_history",
+    "inputs": {},
+    "session": {
+      "stage": "discover",
+      "last_intent": "find_product"
+    },
+    "tenant": {
+      "ai_policy": {
+        "allowed_tools": [
+          "get_buyer_sales_history"
+        ]
+      }
+    },
+    "user_text": "что я покупал раньше",
+    "expected": {
+      "blocked": true,
+      "error_contains": "before the buyer is identified"
+    }
+  },
+  {
+    "name": "license_tool_reserved_for_service",
+    "tool_name": "create_license",
+    "inputs": {},
+    "session": {
+      "stage": "discover",
+      "erp_customer_id": "CUST-0001",
+      "last_intent": "find_product"
+    },
+    "tenant": {
+      "ai_policy": {
+        "allowed_tools": [
+          "create_license"
+        ]
+      }
+    },
+    "user_text": "сделай лицензию",
+    "expected": {
+      "blocked": true,
+      "error_contains": "reserved for service flows"
+    }
+  }
+]

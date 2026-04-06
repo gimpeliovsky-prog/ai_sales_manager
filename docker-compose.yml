@@ -1,0 +1,51 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ai_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - ai_internal
+
+  ai-sales-manager:
+    container_name: ai_sales_manager
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      LICENSE_SERVER_URL: ${LICENSE_SERVER_URL:-http://license_api:8000}
+      REDIS_URL: ${REDIS_URL:-redis://ai_redis:6379}
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=5).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=frappe_network"
+      - "traefik.http.routers.ai-sales-manager.rule=Host(`ai-dev.kadimasoft.com`)"
+      - "traefik.http.routers.ai-sales-manager.entrypoints=websecure"
+      - "traefik.http.routers.ai-sales-manager.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ai-sales-manager.loadbalancer.server.port=8001"
+    networks:
+      - frappe_network
+      - ai_internal
+
+networks:
+  frappe_network:
+    external: true
+  ai_internal:
+    internal: true

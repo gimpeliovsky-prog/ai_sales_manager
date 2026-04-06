@@ -1,0 +1,146 @@
+[
+  {
+    "name": "customer_requested_handoff_enabled",
+    "session": {
+      "stage": "discover",
+      "erp_customer_id": "CUST-0001"
+    },
+    "user_text": "Хочу менеджера",
+    "channel": "telegram",
+    "needs_intro": false,
+    "customer_identified": true,
+    "active_order_name": null,
+    "ai_policy": {
+      "handoff_rules": {
+        "enabled": true,
+        "allow_customer_requested_handoff": true,
+        "frustrated_customer_handoff": true,
+        "clarification_failure_limit": 2
+      }
+    },
+    "expected": {
+      "stage": "handoff",
+      "handoff_required": true,
+      "handoff_reason": "customer_requested_human"
+    }
+  },
+  {
+    "name": "customer_requested_handoff_disabled",
+    "session": {
+      "stage": "discover",
+      "erp_customer_id": "CUST-0001"
+    },
+    "user_text": "Хочу менеджера",
+    "channel": "telegram",
+    "needs_intro": false,
+    "customer_identified": true,
+    "active_order_name": null,
+    "ai_policy": {
+      "handoff_rules": {
+        "enabled": true,
+        "allow_customer_requested_handoff": false,
+        "frustrated_customer_handoff": true,
+        "clarification_failure_limit": 2
+      }
+    },
+    "expected": {
+      "stage": "discover",
+      "handoff_required": false,
+      "handoff_reason": null
+    }
+  },
+  {
+    "name": "clarification_limit_respected",
+    "session": {
+      "stage": "clarify",
+      "failed_clarification_count": 1,
+      "erp_customer_id": "CUST-0001"
+    },
+    "user_text": "нужно",
+    "channel": "telegram",
+    "needs_intro": false,
+    "customer_identified": true,
+    "active_order_name": null,
+    "ai_policy": {
+      "handoff_rules": {
+        "enabled": true,
+        "allow_customer_requested_handoff": true,
+        "frustrated_customer_handoff": true,
+        "clarification_failure_limit": 3
+      }
+    },
+    "expected": {
+      "stage": "clarify",
+      "handoff_required": false,
+      "failed_clarification_count": 2
+    }
+  },
+  {
+    "name": "frustrated_customer_handoff_disabled",
+    "session": {
+      "stage": "discover",
+      "erp_customer_id": "CUST-0001"
+    },
+    "user_text": "бред",
+    "channel": "telegram",
+    "needs_intro": false,
+    "customer_identified": true,
+    "active_order_name": null,
+    "ai_policy": {
+      "handoff_rules": {
+        "enabled": true,
+        "allow_customer_requested_handoff": true,
+        "frustrated_customer_handoff": false,
+        "clarification_failure_limit": 2
+      }
+    },
+    "expected": {
+      "stage": "discover",
+      "handoff_required": false,
+      "handoff_reason": null
+    }
+  },
+  {
+    "name": "custom_behavior_and_intent_rules",
+    "session": {
+      "stage": "discover",
+      "erp_customer_id": "CUST-0001"
+    },
+    "user_text": "vip basket please",
+    "channel": "telegram",
+    "needs_intro": false,
+    "customer_identified": true,
+    "active_order_name": "SO-123",
+    "ai_policy": {
+      "classification": {
+        "behavior_rules": [
+          {
+            "match_type": "contains",
+            "pattern": "vip",
+            "target": "price_sensitive",
+            "confidence": 0.91
+          }
+        ],
+        "intent_rules": [
+          {
+            "match_type": "contains",
+            "pattern": "basket",
+            "target": "add_to_order",
+            "confidence": 0.89
+          }
+        ]
+      },
+      "handoff_rules": {
+        "enabled": true,
+        "allow_customer_requested_handoff": true,
+        "frustrated_customer_handoff": true,
+        "clarification_failure_limit": 2
+      }
+    },
+    "expected": {
+      "stage": "order_build",
+      "behavior_class": "price_sensitive",
+      "last_intent": "add_to_order"
+    }
+  }
+]
