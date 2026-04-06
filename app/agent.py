@@ -341,43 +341,7 @@ def _extract_function_calls(response: dict[str, Any]) -> list[dict[str, Any]]:
     return calls
 
 
-def _sanitize_customer_reply(text: str, *, buyer_identified: bool = False) -> str:
-    if not text:
-        return text
-    return _format_customer_reply(text, buyer_identified=buyer_identified)
-
-    cleaned = text.replace("**", "").replace("__", "")
-    lines = [line.rstrip() for line in cleaned.splitlines()]
-    filtered_lines: list[str] = []
-
-    for line in lines:
-        normalized = line.strip()
-        if not normalized:
-            if filtered_lines and filtered_lines[-1] != "":
-                filtered_lines.append("")
-            continue
-
-        lowered = normalized.lower()
-        if "base unit" in lowered:
-            continue
-        if "delivery date" in lowered or "дата доставки" in lowered:
-            continue
-        if buyer_identified and (
-            "full name and phone number" in lowered
-            or "name and phone number" in lowered
-            or "ваше имя и телефон" in lowered
-            or "имя и телефон" in lowered
-        ):
-            continue
-
-        filtered_lines.append(normalized)
-
-    result = "\n".join(filtered_lines).strip()
-    result = re.sub(r"\n{3,}", "\n\n", result)
-    return result or "..."
-
-
-def _format_customer_reply(text: str, *, buyer_identified: bool = False) -> str:
+def _format_customer_reply(text: str) -> str:
     if not text:
         return text
 
@@ -385,6 +349,7 @@ def _format_customer_reply(text: str, *, buyer_identified: bool = False) -> str:
     result = "\n".join(line.rstrip() for line in cleaned.splitlines()).strip()
     result = re.sub(r"\n{3,}", "\n\n", result)
     return result or "..."
+
 
 async def _create_openai_response(
     client: httpx.AsyncClient,
@@ -995,7 +960,7 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
             final_reply = "Произошла внутренняя ошибка, попробуйте позже."
 
     session["messages"].append({"role": "user", "content": user_text})
-    final_reply = _format_customer_reply(final_reply, buyer_identified=bool(session.get("erp_customer_id")))
+    final_reply = _format_customer_reply(final_reply)
     final_reply = _maybe_prefix_returning_customer(session, current_lang, final_reply)
     session["messages"].append({"role": "assistant", "content": final_reply})
     session["messages"] = session["messages"][-40:]

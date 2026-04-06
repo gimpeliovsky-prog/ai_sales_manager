@@ -143,79 +143,6 @@ TOOLS: list[dict] = [
     },
 ]
 
-_PRODUCT_ALIASES: dict[str, list[str]] = {
-    "ноутбук": ["laptop"],
-    "ноутбуки": ["laptop"],
-    "лэптоп": ["laptop"],
-    "лэптопы": ["laptop"],
-    "компьютер": ["computer", "laptop"],
-    "телевизор": ["television", "tv"],
-    "телевизоры": ["television", "tv"],
-    "рюкзак": ["backpack"],
-    "рюкзаки": ["backpack"],
-    "книга": ["book"],
-    "книги": ["book"],
-    "смартфон": ["smartphone", "phone"],
-    "смартфоны": ["smartphone", "phone"],
-    "телефон": ["smartphone", "phone"],
-    "телефоны": ["smartphone", "phone"],
-    "кружка": ["coffee mug", "mug"],
-    "кружки": ["coffee mug", "mug"],
-    "наушники": ["headphones"],
-    "камера": ["camera"],
-    "футболка": ["t-shirt", "shirt"],
-    "футболки": ["t-shirt", "shirt"],
-    "кроссовки": ["sneakers"],
-    "מחשב": ["computer", "laptop"],
-    "מחשבים": ["computer", "laptop"],
-    "מחשב נייד": ["laptop"],
-    "מחשבים ניידים": ["laptop"],
-    "לפטופ": ["laptop"],
-    "לפטופים": ["laptop"],
-    "טלוויזיה": ["television", "tv"],
-    "טלוויזיות": ["television", "tv"],
-    "תרמיל": ["backpack"],
-    "תרמילים": ["backpack"],
-    "ספר": ["book"],
-    "ספרים": ["book"],
-    "סמארטפון": ["smartphone", "phone"],
-    "סמארטפונים": ["smartphone", "phone"],
-    "טלפון": ["smartphone", "phone"],
-    "טלפונים": ["smartphone", "phone"],
-    "ספל": ["coffee mug", "mug"],
-    "ספלים": ["coffee mug", "mug"],
-    "אוזניות": ["headphones"],
-    "מצלמה": ["camera"],
-    "מצלמות": ["camera"],
-    "חולצה": ["t-shirt", "shirt"],
-    "חולצות": ["t-shirt", "shirt"],
-    "נעליים": ["sneakers"],
-    "לابتوب": ["laptop"],
-    "لابتوبات": ["laptop"],
-    "حاسوب": ["computer", "laptop"],
-    "حاسوب محمول": ["laptop"],
-    "كمبيوتر": ["computer", "laptop"],
-    "تلفزيون": ["television", "tv"],
-    "تلفزيونات": ["television", "tv"],
-    "حقيبة": ["backpack"],
-    "حقائب": ["backpack"],
-    "كتاب": ["book"],
-    "كتب": ["book"],
-    "هاتف": ["smartphone", "phone"],
-    "هواتف": ["smartphone", "phone"],
-    "هاتف ذكي": ["smartphone", "phone"],
-    "أكواب": ["coffee mug", "mug"],
-    "كوب": ["coffee mug", "mug"],
-    "سماعات": ["headphones"],
-    "كاميرا": ["camera"],
-    "كاميرات": ["camera"],
-    "قميص": ["t-shirt", "shirt"],
-    "قمصان": ["t-shirt", "shirt"],
-    "حذاء": ["sneakers"],
-    "أحذية": ["sneakers"],
-}
-
-
 def _has_explicit_confirmation(user_text: str) -> bool:
     return has_explicit_confirmation(user_text)
 
@@ -235,24 +162,21 @@ def _items_have_qty(items: list[dict[str, Any]] | None) -> bool:
 
 
 def _normalize_match_text(text: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ\u0590-\u05FF\u0600-\u06FF]+", " ", text or "").strip().lower()
+    return re.sub(r"[^a-zA-Z0-9?-??-???\u0590-\u05FF\u0600-\u06FF]+", " ", text or "").strip().lower()
 
 
-def _search_aliases(text: str | None) -> list[str]:
-    normalized = _normalize_match_text(text or "")
-    if not normalized:
-        return []
-    return [candidate for candidate in normalized.split() if len(candidate) >= 3]
-    aliases: list[str] = []
-    for token in normalized.split():
-        for alias in _PRODUCT_ALIASES.get(token, []):
-            if alias not in aliases:
-                aliases.append(alias)
-    if normalized in _PRODUCT_ALIASES:
-        for alias in _PRODUCT_ALIASES[normalized]:
-            if alias not in aliases:
-                aliases.append(alias)
-    return aliases
+def _build_search_candidates(*texts: str | None) -> list[str]:
+    candidates: list[str] = []
+    for raw_text in texts:
+        normalized = _normalize_match_text(raw_text or "")
+        if not normalized:
+            continue
+        if normalized not in candidates:
+            candidates.append(normalized)
+        for token in normalized.split():
+            if len(token) >= 3 and token not in candidates:
+                candidates.append(token)
+    return candidates[:6]
 
 
 def _translate_uom_label(label: str | None, lang: str) -> str | None:
@@ -398,17 +322,7 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
         except Exception:
             result = {"items": []}
         if not result.get("items"):
-            candidates: list[str] = []
-            for raw_text in (item_name, item_group):
-                normalized = _normalize_match_text(raw_text or "")
-                if not normalized:
-                    continue
-                if normalized not in candidates:
-                    candidates.append(normalized)
-                for token in normalized.split():
-                    if len(token) >= 3 and token not in candidates:
-                        candidates.append(token)
-            for candidate in candidates[:6]:
+            for candidate in _build_search_candidates(item_name, item_group):
                 try:
                     result = await lc.get_items(company_code, None, candidate, current_lang)
                 except Exception:
