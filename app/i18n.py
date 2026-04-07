@@ -65,6 +65,9 @@ DEFAULT_TRANSLATIONS: dict[str, dict[str, str]] = {
     "followup.ask_unit": {
         "en": "Is your request about {product_interest} still relevant? Send the unit or package size and I will continue.",
     },
+    "followup.ask_delivery_timing": {
+        "en": "Is your request about {product_interest} still relevant? Send the delivery timing you need and I will continue.",
+    },
     "followup.ask_contact": {
         "en": "I can continue with {product_interest}. Please send your name and phone number so we can secure the offer.",
     },
@@ -88,6 +91,9 @@ DEFAULT_TRANSLATIONS: dict[str, dict[str, str]] = {
         "ru": "единицу/упаковку",
         "he": "את היחידה או האריזה",
         "ar": "الوحدة أو العبوة",
+    },
+    "next_step.ask_delivery_timing": {
+        "en": "the delivery timing you need",
     },
     "next_step.ask_contact": {
         "en": "your name and phone number",

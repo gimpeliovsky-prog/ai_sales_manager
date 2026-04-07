@@ -46,6 +46,8 @@ def evaluate_tool_call(
     active_order_name = str(session.get("last_sales_order_name") or "").strip()
     requested_order_name = str(inputs.get("sales_order_name") or "").strip()
     has_items = isinstance(inputs.get("items"), list) and bool(inputs.get("items"))
+    lead_profile = session.get("lead_profile") if isinstance(session.get("lead_profile"), dict) else {}
+    needs_multi_item_uom_confirmation = bool(lead_profile.get("requested_items_need_uom_confirmation"))
 
     if tool_name == "get_product_catalog":
         return None
@@ -96,6 +98,13 @@ def evaluate_tool_call(
                 "Sales order creation requires at least one item.",
                 "Ask which item and quantity the customer wants.",
             )
+        if needs_multi_item_uom_confirmation:
+            assumed_uom = str(lead_profile.get("requested_items_assumed_uom") or "box")
+            return _deny(
+                tool_name,
+                f"Multi-item order UOM is still only a likely assumption ({assumed_uom}).",
+                "Ask the customer to confirm whether the listed quantities are boxes or another unit before creating the order.",
+            )
         minimum_violation = minimum_order_violation(inputs.get("items"), ai_policy)
         if minimum_violation:
             return _deny(
@@ -135,6 +144,13 @@ def evaluate_tool_call(
                 tool_name,
                 "Sales order update requires items to add.",
                 "Ask what item and quantity should be added.",
+            )
+        if needs_multi_item_uom_confirmation:
+            assumed_uom = str(lead_profile.get("requested_items_assumed_uom") or "box")
+            return _deny(
+                tool_name,
+                f"Multi-item order UOM is still only a likely assumption ({assumed_uom}).",
+                "Ask the customer to confirm whether the listed quantities are boxes or another unit before updating the order.",
             )
         return None
 

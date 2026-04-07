@@ -1200,6 +1200,7 @@ async def process_message_result(
                         channel_uid=channel_uid,
                         lc=lc,
                         ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
+                        lead_profile=session.get("lead_profile") if isinstance(session.get("lead_profile"), dict) else None,
                     )
                     try:
                         parsed_result = json.loads(result_str)

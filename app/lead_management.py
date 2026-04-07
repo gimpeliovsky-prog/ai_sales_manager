@@ -21,6 +21,30 @@ LEAD_STATUSES = {
 }
 
 _QTY_RE = re.compile(r"\b\d+(?:[.,]\d+)?\b")
+_ITEM_QTY_SEGMENT_RE = re.compile(r"^\s*(?P<name>.+?)\s+(?P<qty>\d+(?:[.,]\d+)?)(?:\s+(?P<uom>[^\d,;]+))?\s*$")
+_YES_RE = re.compile(
+    r"(?:\byes\b|\byeah\b|\byep\b|\bok(?:ay)?\b|\bcorrect\b|\bright\b|\bconfirmed?\b|"
+    r"\u0434\u0430|\u0430\u0433\u0430|\u0432\u0435\u0440\u043d\u043e|\u043f\u0440\u0430\u0432\u0438\u043b\u044c\u043d\u043e)",
+    re.IGNORECASE,
+)
+DEFAULT_MULTI_ITEM_UOM_TERMS: dict[str, list[str]] = {
+    "box": [
+        "box",
+        "boxes",
+        "case",
+        "cases",
+        "\u043a\u043e\u0440\u043e\u0431\u043a\u0430",
+        "\u043a\u043e\u0440\u043e\u0431\u043a\u0438",
+        "\u043a\u043e\u0440\u043e\u0431\u043e\u043a",
+        "\u043a\u043e\u0440\u043e\u0431\u0430\u0445",
+        "\u05e7\u05e8\u05d8\u05d5\u05df",
+        "\u05e7\u05e8\u05d8\u05d5\u05e0\u05d9\u05dd",
+        "\u05e7\u05d5\u05e4\u05e1\u05d4",
+        "\u05e7\u05d5\u05e4\u05e1\u05d0",
+        "\u05e7\u05d5\u05e4\u05e1\u05d0\u05d5\u05ea",
+        "\u05e7\u05d5\u05e4\u05e1\u05d5\u05ea",
+    ],
+}
 
 
 def normalize_telegram_username(username: Any) -> str:
@@ -143,6 +167,8 @@ def empty_lead_profile() -> dict[str, Any]:
         "score": 0,
         "temperature": "cold",
         "next_action": "ask_need",
+        "qualification_priority": "product_need",
+        "qualification_priority_reason": None,
         "source_channel": None,
         "source_campaign": None,
         "source_utm_source": None,
@@ -159,6 +185,12 @@ def empty_lead_profile() -> dict[str, Any]:
         "product_interest": None,
         "quantity": None,
         "uom": None,
+        "requested_items": [],
+        "requested_item_count": 0,
+        "requested_items_have_quantities": False,
+        "requested_items_need_uom_confirmation": False,
+        "requested_items_assumed_uom": None,
+        "requested_items_uom_assumption_status": None,
         "urgency": None,
         "delivery_need": None,
         "price_sensitivity": False,
@@ -233,6 +265,24 @@ def normalize_lead_profile(raw_profile: Any) -> dict[str, Any]:
         profile["temperature"] = "cold"
     if not isinstance(profile.get("merged_duplicate_lead_ids"), list):
         profile["merged_duplicate_lead_ids"] = []
+    if not isinstance(profile.get("requested_items"), list):
+        profile["requested_items"] = []
+    try:
+        profile["requested_item_count"] = max(0, int(profile.get("requested_item_count") or len(profile["requested_items"])))
+    except (TypeError, ValueError):
+        profile["requested_item_count"] = len(profile["requested_items"])
+    if profile["requested_items"] and not profile.get("requested_items_have_quantities"):
+        profile["requested_items_have_quantities"] = all(isinstance(item, dict) and item.get("qty") for item in profile["requested_items"])
+    else:
+        profile["requested_items_have_quantities"] = bool(profile.get("requested_items_have_quantities"))
+    if profile["requested_items"] and "requested_items_need_uom_confirmation" not in (raw_profile or {}):
+        profile["requested_items_need_uom_confirmation"] = not (profile.get("uom") or all(isinstance(item, dict) and item.get("uom") for item in profile["requested_items"]))
+    else:
+        profile["requested_items_need_uom_confirmation"] = bool(profile.get("requested_items_need_uom_confirmation"))
+    if profile["requested_items_need_uom_confirmation"] and not profile.get("requested_items_assumed_uom"):
+        profile["requested_items_assumed_uom"] = "box"
+    if profile.get("requested_items_assumed_uom") and not profile.get("requested_items_uom_assumption_status"):
+        profile["requested_items_uom_assumption_status"] = "likely" if profile.get("requested_items_need_uom_confirmation") else "confirmed"
     try:
         profile["followup_count"] = max(0, int(profile.get("followup_count") or 0))
     except (TypeError, ValueError):
@@ -326,6 +376,25 @@ def _lead_config(config: dict[str, Any] | None) -> dict[str, Any]:
     return config if isinstance(config, dict) else {}
 
 
+def _multi_item_default_uom(config: dict[str, Any] | None) -> str:
+    return str(_lead_config(config).get("multi_item_default_uom") or "box").strip() or "box"
+
+
+def _multi_item_uom_terms(config: dict[str, Any] | None) -> dict[str, list[str]]:
+    terms = {key: list(value) for key, value in DEFAULT_MULTI_ITEM_UOM_TERMS.items()}
+    configured_terms = _lead_config(config).get("multi_item_uom_terms")
+    if isinstance(configured_terms, dict):
+        for uom, values in configured_terms.items():
+            if not isinstance(values, list):
+                continue
+            clean_uom = str(uom or "").strip()
+            if not clean_uom:
+                continue
+            terms.setdefault(clean_uom, [])
+            terms[clean_uom].extend(str(value).strip() for value in values if str(value).strip())
+    return terms
+
+
 def _configured_terms(config: dict[str, Any] | None, signal: str) -> list[str]:
     terms = list(DEFAULT_SIGNAL_TERMS.get(signal, []))
     configured_terms = _lead_config(config).get("signal_terms")
@@ -372,6 +441,63 @@ def _first_qty(text: str) -> float | None:
         return float(match.group(0).replace(",", "."))
     except ValueError:
         return None
+
+
+def _parse_requested_items(text: str) -> list[dict[str, Any]]:
+    parts = [part.strip() for part in re.split(r"[,;\n]+", text or "") if part.strip()]
+    if len(parts) < 2:
+        return []
+    items: list[dict[str, Any]] = []
+    for part in parts:
+        match = _ITEM_QTY_SEGMENT_RE.match(part)
+        if not match:
+            return []
+        name = _clean_text(match.group("name"), limit=120)
+        if not name:
+            return []
+        try:
+            qty = float(str(match.group("qty")).replace(",", "."))
+        except ValueError:
+            return []
+        uom = _clean_text(match.group("uom"), limit=40)
+        items.append({"item_text": name, "qty": qty, "uom": uom})
+    return items
+
+
+def _confirmed_multi_item_uom(text: str, profile: dict[str, Any], config: dict[str, Any] | None) -> str | None:
+    normalized = (text or "").casefold()
+    if not normalized:
+        return None
+    for uom, terms in _multi_item_uom_terms(config).items():
+        if any(term.casefold() in normalized for term in terms):
+            return str(uom)
+    assumed_uom = str(profile.get("requested_items_assumed_uom") or "").strip()
+    if assumed_uom and _YES_RE.search(text or ""):
+        return assumed_uom
+    return None
+
+
+def _apply_multi_item_uom(profile: dict[str, Any], uom: str) -> None:
+    clean_uom = str(uom or "").strip()
+    if not clean_uom:
+        return
+    profile["uom"] = clean_uom
+    profile["requested_items"] = [
+        {**item, "uom": item.get("uom") or clean_uom} if isinstance(item, dict) else item
+        for item in profile.get("requested_items") or []
+    ]
+    profile["requested_items_need_uom_confirmation"] = False
+    profile["requested_items_uom_assumption_status"] = "confirmed"
+
+
+def _has_quantity_detail(profile: dict[str, Any]) -> bool:
+    return bool(profile.get("quantity")) or bool(profile.get("requested_items_have_quantities") and profile.get("requested_item_count"))
+
+
+def _has_unit_detail(profile: dict[str, Any]) -> bool:
+    if profile.get("uom"):
+        return True
+    return bool(profile.get("requested_item_count") and not profile.get("requested_items_need_uom_confirmation"))
 
 
 def _first_number(*values: Any) -> float | None:
@@ -425,9 +551,9 @@ def _score_profile(*, profile: dict[str, Any], customer_identified: bool, stage:
         score += 20
     if profile.get("product_interest") or intent in {"find_product", "browse_catalog"}:
         score += 20
-    if profile.get("quantity"):
+    if _has_quantity_detail(profile):
         score += 15
-    if profile.get("uom"):
+    if _has_unit_detail(profile):
         score += 5
     if profile.get("urgency"):
         score += 10
@@ -459,7 +585,7 @@ def _status_for(*, stage: str, intent: str, profile: dict[str, Any], active_orde
         return "order_ready"
     if intent in {"find_product", "browse_catalog"} and profile.get("price_sensitivity"):
         return "quote_needed"
-    if profile.get("product_interest") and (profile.get("quantity") or profile.get("uom")):
+    if profile.get("product_interest") and (_has_quantity_detail(profile) or _has_unit_detail(profile)):
         return "qualified"
     if stage == "lead_capture" or profile.get("product_interest"):
         return "new_lead"
@@ -475,10 +601,12 @@ def _next_action_for(*, status: str, stage: str, profile: dict[str, Any], custom
         return "fulfill_service_request"
     if not profile.get("product_interest"):
         return "ask_need"
-    if not profile.get("quantity"):
+    if not _has_quantity_detail(profile):
         return "ask_quantity"
-    if not profile.get("uom"):
+    if not _has_unit_detail(profile):
         return "ask_unit"
+    if stage in {"order_build", "confirm"} and not (profile.get("urgency") or profile.get("delivery_need")):
+        return "ask_delivery_timing"
     if not customer_identified:
         return "ask_contact"
     if status == "quote_needed":
@@ -486,6 +614,42 @@ def _next_action_for(*, status: str, stage: str, profile: dict[str, Any], custom
     if stage in {"order_build", "confirm"}:
         return "confirm_order"
     return "recommend_next_step"
+
+
+def _qualification_priority_for(*, status: str, stage: str, profile: dict[str, Any], customer_identified: bool) -> tuple[str, str]:
+    if not profile.get("product_interest"):
+        return "product_need", "Clarify what the customer wants before asking for commercial parameters."
+    if not _has_quantity_detail(profile):
+        return "quantity", "After the product is known, quantity is the next most important sales qualification detail."
+    if not _has_unit_detail(profile):
+        return "unit_or_variant", "After quantity, clarify unit, package, or variant so price and order details are meaningful."
+    if stage in {"order_build", "confirm"} and not (profile.get("urgency") or profile.get("delivery_need")):
+        return "timing_or_delivery", "Before final order confirmation, clarify timing or delivery needs when they are still missing."
+    if not customer_identified:
+        return "contact", "Ask for contact only after product and core order parameters are clear."
+    if status == "quote_needed":
+        return "price_or_quote", "With product, quantity, and unit known, continue with price or quote handling."
+    if stage in {"order_build", "confirm"}:
+        return "confirmation", "Core details are known, so the next priority is explicit confirmation."
+    return "next_best_action", "Core qualification is sufficient; choose the next concrete sales step."
+
+
+def _set_qualification_priority(
+    *,
+    profile: dict[str, Any],
+    status: str,
+    stage: str,
+    customer_identified: bool,
+) -> dict[str, Any]:
+    priority, reason = _qualification_priority_for(
+        status=status,
+        stage=stage,
+        profile=profile,
+        customer_identified=customer_identified,
+    )
+    profile["qualification_priority"] = priority
+    profile["qualification_priority_reason"] = reason
+    return profile
 
 
 def _mark_lifecycle(
@@ -543,15 +707,33 @@ def update_lead_profile_from_message(
     resolved_stage = str(stage or "")
     resolved_intent = str(intent or "")
     normalized_text = _clean_text(user_text)
+    requested_items = _parse_requested_items(user_text)
 
-    if resolved_intent in {"find_product", "browse_catalog"} and normalized_text:
+    if requested_items:
+        assumed_uom = _multi_item_default_uom(lead_config)
+        product_summary = "; ".join(str(item.get("item_text") or "") for item in requested_items if item.get("item_text"))
+        profile["requested_items"] = requested_items
+        profile["requested_item_count"] = len(requested_items)
+        profile["requested_items_have_quantities"] = True
+        profile["requested_items_need_uom_confirmation"] = not all(item.get("uom") for item in requested_items)
+        profile["requested_items_assumed_uom"] = None if not profile["requested_items_need_uom_confirmation"] else assumed_uom
+        profile["requested_items_uom_assumption_status"] = "confirmed" if not profile["requested_items_need_uom_confirmation"] else "likely"
+        if product_summary:
+            profile["product_interest"] = product_summary
+        if normalized_text and not profile.get("need"):
+            profile["need"] = normalized_text
+    elif profile.get("requested_items") and profile.get("requested_items_need_uom_confirmation"):
+        confirmed_uom = _confirmed_multi_item_uom(user_text, profile, lead_config)
+        if confirmed_uom:
+            _apply_multi_item_uom(profile, confirmed_uom)
+    elif resolved_intent in {"find_product", "browse_catalog"} and normalized_text:
         profile["product_interest"] = normalized_text
         profile["need"] = profile.get("need") or normalized_text
     if resolved_intent == "order_detail" and normalized_text and not profile.get("need"):
         profile["need"] = normalized_text
 
     qty = _first_qty(user_text)
-    if qty is not None:
+    if qty is not None and not requested_items:
         profile["quantity"] = qty
     if _signal_matches(user_text, "urgency", lead_config):
         profile["urgency"] = "soon"
@@ -614,6 +796,12 @@ def update_lead_profile_from_message(
     )
     if profile.get("order_correction_status") == "requested":
         profile["next_action"] = "clarify_order_correction"
+    _set_qualification_priority(
+        profile=profile,
+        status=status,
+        stage=resolved_stage,
+        customer_identified=customer_identified,
+    )
     return _mark_lifecycle(
         profile=profile,
         previous_status=previous_status,
@@ -739,6 +927,12 @@ def update_lead_profile_from_tool(
     )
     if profile.get("order_correction_status") == "requested" and profile.get("active_order_can_modify") is not None:
         profile["next_action"] = "apply_order_correction" if profile.get("active_order_can_modify") else "handoff_manager"
+    _set_qualification_priority(
+        profile=profile,
+        status=str(profile.get("status") or "none"),
+        stage=str(stage or ""),
+        customer_identified=customer_identified,
+    )
     return _mark_lifecycle(
         profile=profile,
         previous_status=previous_status,
@@ -795,6 +989,14 @@ def build_lead_event_payload(
         "lead_score": profile.get("score"),
         "lead_temperature": profile.get("temperature"),
         "next_action": profile.get("next_action"),
+        "qualification_priority": profile.get("qualification_priority"),
+        "qualification_priority_reason": profile.get("qualification_priority_reason"),
+        "requested_items": profile.get("requested_items"),
+        "requested_item_count": profile.get("requested_item_count"),
+        "requested_items_have_quantities": profile.get("requested_items_have_quantities"),
+        "requested_items_need_uom_confirmation": profile.get("requested_items_need_uom_confirmation"),
+        "requested_items_assumed_uom": profile.get("requested_items_assumed_uom"),
+        "requested_items_uom_assumption_status": profile.get("requested_items_uom_assumption_status"),
         "created_at": profile.get("created_at"),
         "qualified_at": profile.get("qualified_at"),
         "quote_needed_at": profile.get("quote_needed_at"),
@@ -1228,6 +1430,8 @@ def build_handoff_summary(session: dict[str, Any], *, reason: str | None = None)
         "lead_score": profile.get("score"),
         "lead_temperature": profile.get("temperature"),
         "next_action": profile.get("next_action"),
+        "qualification_priority": profile.get("qualification_priority"),
+        "qualification_priority_reason": profile.get("qualification_priority_reason"),
         "created_at": profile.get("created_at"),
         "qualified_at": profile.get("qualified_at"),
         "quote_needed_at": profile.get("quote_needed_at"),
@@ -1253,6 +1457,12 @@ def build_handoff_summary(session: dict[str, Any], *, reason: str | None = None)
         "need": profile.get("need"),
         "quantity": profile.get("quantity"),
         "uom": profile.get("uom"),
+        "requested_items": profile.get("requested_items"),
+        "requested_item_count": profile.get("requested_item_count"),
+        "requested_items_have_quantities": profile.get("requested_items_have_quantities"),
+        "requested_items_need_uom_confirmation": profile.get("requested_items_need_uom_confirmation"),
+        "requested_items_assumed_uom": profile.get("requested_items_assumed_uom"),
+        "requested_items_uom_assumption_status": profile.get("requested_items_uom_assumption_status"),
         "urgency": profile.get("urgency"),
         "delivery_need": profile.get("delivery_need"),
         "price_sensitivity": profile.get("price_sensitivity"),

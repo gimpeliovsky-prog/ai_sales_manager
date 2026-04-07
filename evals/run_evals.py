@@ -41,7 +41,7 @@ from app.sales_governance import evaluate_sla_breaches, record_new_sla_breaches 
 from app.sales_crm_sync import build_sales_crm_outbox_event  # noqa: E402
 from app.sales_dedupe import detect_duplicate_lead  # noqa: E402
 from app.sales_lead_repository import compact_lead_record  # noqa: E402
-from app.sales_policy import earliest_delivery_date, minimum_order_violation, normalize_order_state, sales_policy  # noqa: E402
+from app.sales_policy import earliest_delivery_date, minimum_order_violation, normalize_order_state, price_anchor_status, remove_price_fields, sales_policy, should_hide_catalog_prices  # noqa: E402
 from app.sales_quality import evaluate_conversation_quality  # noqa: E402
 from app.sales_reporting import crm_export_contract, dashboard_contract, filter_leads, lead_snapshot, paginate_leads, summarize_leads, summarize_manager_performance, summarize_source_funnel, summarize_time_funnel  # noqa: E402
 from app.sales_timeline import append_lead_timeline_event  # noqa: E402
@@ -351,6 +351,161 @@ def run_lead_management_evals() -> list[str]:
     event_type = sales_event_type(previous_profile, profile)
     if event_type != "quote_requested":
         failures.append(f"lead_event_quote_requested: expected quote_requested, got {event_type!r}")
+
+    missing_product_profile = update_lead_profile_from_message(
+        current_profile={"status": "none", "score": 0},
+        user_text="need help",
+        stage="clarify",
+        behavior_class="unclear_request",
+        intent="low_signal",
+        customer_identified=False,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            missing_product_profile,
+            {"qualification_priority": "product_need", "next_action": "ask_need"},
+            "qualification_priority_product_first",
+        )
+    )
+    missing_quantity_profile = update_lead_profile_from_message(
+        current_profile={"status": "new_lead", "product_interest": "coffee machine"},
+        user_text="coffee machine",
+        stage="clarify",
+        behavior_class="explorer",
+        intent="find_product",
+        customer_identified=False,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            missing_quantity_profile,
+            {"qualification_priority": "quantity", "next_action": "ask_quantity"},
+            "qualification_priority_quantity_second",
+        )
+    )
+    missing_unit_profile = update_lead_profile_from_message(
+        current_profile={"status": "qualified", "product_interest": "coffee machine", "quantity": 2},
+        user_text="2 coffee machines",
+        stage="clarify",
+        behavior_class="direct_buyer",
+        intent="order_detail",
+        customer_identified=False,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            missing_unit_profile,
+            {"qualification_priority": "unit_or_variant", "next_action": "ask_unit"},
+            "qualification_priority_unit_third",
+        )
+    )
+    multi_item_profile = update_lead_profile_from_message(
+        current_profile={"status": "none", "score": 0},
+        user_text="колбаса петровская 4, салями бобруйская 7, докторская 2",
+        stage="lead_capture",
+        behavior_class="direct_buyer",
+        intent="order_detail",
+        customer_identified=False,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            multi_item_profile,
+            {
+                "requested_item_count": 3,
+                "requested_items_have_quantities": True,
+                "requested_items_need_uom_confirmation": True,
+                "requested_items_assumed_uom": "box",
+                "requested_items_uom_assumption_status": "likely",
+                "qualification_priority": "unit_or_variant",
+                "next_action": "ask_unit",
+            },
+            "multi_item_order_list_treats_box_as_likely_but_unconfirmed",
+        )
+    )
+    requested_items = multi_item_profile.get("requested_items")
+    if not isinstance(requested_items, list) or len(requested_items) != 3 or requested_items[0].get("qty") != 4.0:
+        failures.append(f"multi_item_order_list_extracts_items: got {multi_item_profile!r}")
+    premature_order_policy = evaluate_tool_call(
+        tool_name="create_sales_order",
+        inputs={"items": [{"item_code": "ITEM-1", "qty": 4, "uom": "box"}]},
+        session={"stage": "confirm", "erp_customer_id": "CUST-1", "lead_profile": multi_item_profile},
+        tenant={"ai_policy": {}},
+        user_text="confirm",
+    )
+    if not premature_order_policy or not premature_order_policy.get("blocked_by_policy"):
+        failures.append(f"multi_item_order_blocks_unconfirmed_uom: got {premature_order_policy!r}")
+    confirmed_multi_item_profile = update_lead_profile_from_message(
+        current_profile=multi_item_profile,
+        user_text="yes boxes",
+        stage="clarify",
+        behavior_class="direct_buyer",
+        intent="order_detail",
+        customer_identified=False,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            confirmed_multi_item_profile,
+            {
+                "uom": "box",
+                "requested_items_need_uom_confirmation": False,
+                "requested_items_uom_assumption_status": "confirmed",
+                "next_action": "ask_contact",
+                "qualification_priority": "contact",
+            },
+            "multi_item_order_confirms_likely_box_uom",
+        )
+    )
+    hebrew_box_profile = update_lead_profile_from_message(
+        current_profile=multi_item_profile,
+        user_text="קרטון",
+        stage="clarify",
+        behavior_class="direct_buyer",
+        intent="order_detail",
+        customer_identified=False,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            hebrew_box_profile,
+            {"uom": "box", "requested_items_need_uom_confirmation": False},
+            "multi_item_order_confirms_hebrew_karton_as_box",
+        )
+    )
+    hebrew_box_alt_profile = update_lead_profile_from_message(
+        current_profile=multi_item_profile,
+        user_text="קופסה",
+        stage="clarify",
+        behavior_class="direct_buyer",
+        intent="order_detail",
+        customer_identified=False,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            hebrew_box_alt_profile,
+            {"uom": "box", "requested_items_need_uom_confirmation": False},
+            "multi_item_order_confirms_hebrew_kufsa_as_box",
+        )
+    )
+    missing_timing_profile = update_lead_profile_from_message(
+        current_profile={"status": "qualified", "product_interest": "coffee machine", "quantity": 2, "uom": "box"},
+        user_text="2 boxes coffee machines",
+        stage="order_build",
+        behavior_class="direct_buyer",
+        intent="order_detail",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            missing_timing_profile,
+            {"qualification_priority": "timing_or_delivery", "next_action": "ask_delivery_timing"},
+            "qualification_priority_delivery_before_confirmation",
+        )
+    )
 
     sourced_profile = update_lead_profile_source(
         current_profile=profile,
@@ -1020,6 +1175,16 @@ def run_sales_governance_evals() -> list[str]:
         failures.append(f"sales_quality_sales_policy_flags: got {quality_with_policy!r}")
     if not minimum_order_violation([{"qty": 2, "rate": 10}], {"sales_policy": {"minimum_order_total": 50}}):
         failures.append("sales_policy_minimum_order_violation: expected violation")
+    incomplete_anchor = price_anchor_status({"product_interest": "coffee", "quantity": 2})
+    if incomplete_anchor.get("complete") or incomplete_anchor.get("missing") != ["uom"]:
+        failures.append(f"sales_policy_price_anchor_missing_uom: got {incomplete_anchor!r}")
+    if not should_hide_catalog_prices({"product_interest": "coffee", "quantity": 2}, {"sales_policy": {}}):
+        failures.append("sales_policy_hides_catalog_prices_without_uom: expected hidden prices")
+    if should_hide_catalog_prices({"product_interest": "coffee", "quantity": 2, "uom": "box"}, {"sales_policy": {}}):
+        failures.append("sales_policy_allows_catalog_prices_with_full_anchor: expected visible prices")
+    scrubbed = remove_price_fields({"items": [{"item_name": "Coffee", "rate": 12, "price_list_rate": 15, "nested": {"price": 9}}]})
+    if "rate" in scrubbed["items"][0] or "price_list_rate" in scrubbed["items"][0] or "price" in scrubbed["items"][0]["nested"]:
+        failures.append(f"sales_policy_remove_price_fields: got {scrubbed!r}")
     if normalize_order_state({"name": "SO-1", "status": "Delivered", "per_delivered": 100}).get("can_modify") is not False:
         failures.append("sales_policy_delivered_order_not_modifiable: expected can_modify False")
     if sales_policy({"sales_policy": {"default_delivery_days": 2}}).get("default_delivery_days") != 2:

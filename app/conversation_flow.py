@@ -34,6 +34,8 @@ STAGE_PROMPTS: dict[str, list[str]] = {
     "clarify": [
         "Your goal is to clarify missing product, quantity, variant, or UOM details.",
         "Ask one focused clarification question at a time.",
+        "Use the qualification order: product/need first, then quantity, then unit/package/variant, then timing or delivery when needed, then contact details.",
+        "If the customer sent a list of item names with numbers, treat quantities as provided; boxes are the likely UOM when no other rule is known, but clarify the unit/package before order confirmation.",
     ],
     "order_build": [
         "Your goal is to assemble or update the customer's order.",
@@ -495,6 +497,13 @@ def advance_stage_after_tool(session: dict[str, Any], tool_name: str, tool_resul
     if tool_name == "send_sales_order_pdf" and tool_result.get("name"):
         session["stage"] = "service"
         session["stage_confidence"] = 0.94
+        session["handoff_required"] = False
+        session["handoff_reason"] = None
+        return
+
+    if tool_name == "get_sales_order_status" and not tool_result.get("error"):
+        session["stage"] = "service"
+        session["stage_confidence"] = 0.9
         session["handoff_required"] = False
         session["handoff_reason"] = None
         return

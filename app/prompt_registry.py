@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.sales_policy import sales_policy
-
 from app.conversation_flow import (
     BEHAVIOR_PROMPTS,
     CHANNEL_PROMPTS,
@@ -11,6 +9,7 @@ from app.conversation_flow import (
     DEFAULT_STAGE,
     STAGE_PROMPTS,
 )
+from app.sales_policy import sales_policy
 
 CORE_POLICY: list[str] = [
     "Act like a capable human sales manager, not like a generic chatbot.",
@@ -36,6 +35,7 @@ CATALOG_POLICY: list[str] = [
     "Treat stock units and sales units as separate concepts.",
     "Use only UOM values returned by the catalog or item tools.",
     "When tool results include customer_uom_options, use those options and phrase the explanation naturally in the customer's language.",
+    "If a catalog tool result has price_display_blocked=true, do not state a price or rate; ask for the missing product, quantity, or UOM shown in price_anchor.missing.",
     "If the requested UOM is unclear or unavailable, clarify before creating or updating an order.",
     "Do not expose internal field names such as stock_uom, available_uoms, non_stock_uoms, or conversion_factor.",
 ]
@@ -58,6 +58,9 @@ SALES_PLAYBOOK: list[str] = [
     "Use this inbound-sales sequence: acknowledge the request, understand the need, recommend a concrete next step, confirm order details, then execute only after explicit confirmation.",
     "For new inbound leads, create value before asking for more data: answer the specific product question when tool-backed data is available, then ask for only the missing contact or order detail needed next.",
     "Qualify naturally without interrogating: product or service need, quantity and unit, relevant constraints, urgency, and delivery or billing needs only when needed for the next step.",
+    "When clarifying, follow this priority order: first product/need, then quantity, then unit/package/variant, then timing or delivery need when needed for order confirmation, then contact details, then confirmation.",
+    "Ask exactly one missing detail from the current qualification_priority; do not skip ahead to lower-priority details unless the customer already provided the higher-priority ones.",
+    "For multi-item order lists such as 'item A 4, item B 7', treat the item names and quantities as provided and treat boxes as the likely UOM when the tenant has no other rule, but ask the customer to confirm whether these are boxes or another UOM before creating or confirming the order.",
     "When the customer is exploring, narrow choices to two or three relevant options and ask which direction fits best.",
     "When the customer is price-sensitive, first anchor on the exact item, quantity, and unit; do not promise discounts unless a tool or tenant policy explicitly supports it.",
     "When the customer is ready to buy, summarize the item, quantity, unit, and any known delivery details, then ask for clear confirmation.",
@@ -143,12 +146,19 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
         ("score", "Lead score"),
         ("temperature", "Lead temperature"),
         ("next_action", "Recommended next action"),
+        ("qualification_priority", "Qualification priority"),
+        ("qualification_priority_reason", "Qualification priority reason"),
         ("created_at", "Lead created at"),
         ("qualified_at", "Lead qualified at"),
         ("hot_at", "Lead became hot at"),
         ("product_interest", "Product interest"),
         ("quantity", "Quantity"),
         ("uom", "Unit"),
+        ("requested_item_count", "Requested item count"),
+        ("requested_items_have_quantities", "Requested items have quantities"),
+        ("requested_items_need_uom_confirmation", "Requested items need UOM confirmation"),
+        ("requested_items_assumed_uom", "Requested items assumed UOM"),
+        ("requested_items_uom_assumption_status", "Requested items UOM assumption status"),
         ("urgency", "Urgency"),
         ("delivery_need", "Delivery need"),
         ("decision_status", "Decision status"),
@@ -176,6 +186,8 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
             lines.append(f"{label}: {value}")
     if lead_profile.get("price_sensitivity"):
         lines.append("Customer appears price-sensitive.")
+    if isinstance(lead_profile.get("requested_items"), list) and lead_profile.get("requested_items"):
+        lines.append(f"Requested items: {lead_profile['requested_items']}")
     if lead_profile.get("do_not_contact"):
         lines.append("Customer must not receive proactive follow-up.")
     return lines

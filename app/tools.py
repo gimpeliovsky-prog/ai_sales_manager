@@ -6,7 +6,14 @@ from app.catalog_localization import catalog_lang as _catalog_lang, localize_cat
 from app.i18n import text as i18n_text
 from app.interaction_patterns import has_add_to_order_intent, has_explicit_confirmation
 from app.license_client import LicenseClient
-from app.sales_policy import earliest_delivery_date, minimum_order_violation, normalize_order_state
+from app.sales_policy import (
+    earliest_delivery_date,
+    minimum_order_violation,
+    normalize_order_state,
+    price_anchor_status,
+    remove_price_fields,
+    should_hide_catalog_prices,
+)
 
 TOOLS: list[dict] = [
     {
@@ -210,6 +217,7 @@ async def execute_tool(
     channel_uid: str,
     lc: LicenseClient,
     ai_policy: dict[str, Any] | None = None,
+    lead_profile: dict[str, Any] | None = None,
 ) -> str:
     try:
         result = await _dispatch(
@@ -224,13 +232,14 @@ async def execute_tool(
             channel_uid,
             lc,
             ai_policy,
+            lead_profile,
         )
         return json.dumps(result, ensure_ascii=False, default=str)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
 
-async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order_name, current_lang, user_text, channel, channel_uid, lc, ai_policy=None):
+async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order_name, current_lang, user_text, channel, channel_uid, lc, ai_policy=None, lead_profile=None):
     from app.buyer_resolver import create_buyer_from_intro
 
     if name == "get_product_catalog":
@@ -259,7 +268,15 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
                     result = {"items": []}
                 if result.get("items"):
                     break
-        return _localize_catalog_result(result, current_lang, ai_policy)
+        localized = _localize_catalog_result(result, current_lang, ai_policy)
+        if should_hide_catalog_prices(lead_profile, ai_policy):
+            cleaned = remove_price_fields(localized)
+            if isinstance(cleaned, dict):
+                cleaned["price_display_blocked"] = True
+                cleaned["price_display_blocked_reason"] = "price_requires_product_quantity_and_uom"
+                cleaned["price_anchor"] = price_anchor_status(lead_profile)
+            return cleaned
+        return localized
     if name == "create_sales_order":
         if not erp_customer_id:
             return {"error": i18n_text("tool_error.buyer_not_identified", current_lang, ai_policy=ai_policy), "error_code": "buyer_not_identified"}
