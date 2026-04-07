@@ -596,6 +596,103 @@ async def _create_openai_response(
     return response.json()
 
 
+def _confirmation_classifier_enabled(tenant: dict[str, Any]) -> bool:
+    ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
+    sales_policy = ai_policy.get("sales_policy") if isinstance(ai_policy.get("sales_policy"), dict) else {}
+    return bool(sales_policy.get("llm_confirmation_classifier_enabled", True))
+
+
+def _confirmation_min_confidence(tenant: dict[str, Any]) -> float:
+    ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
+    sales_policy = ai_policy.get("sales_policy") if isinstance(ai_policy.get("sales_policy"), dict) else {}
+    try:
+        return max(0.5, min(0.99, float(sales_policy.get("llm_confirmation_min_confidence", 0.72) or 0.72)))
+    except (TypeError, ValueError):
+        return 0.72
+
+
+def _parse_confirmation_classifier_response(text: str) -> dict[str, Any]:
+    cleaned = str(text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {"confirmed": False, "confidence": 0.0, "reason": "invalid_json"}
+    if not isinstance(payload, dict):
+        return {"confirmed": False, "confidence": 0.0, "reason": "invalid_payload"}
+    try:
+        confidence = float(payload.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return {
+        "confirmed": bool(payload.get("confirmed")),
+        "confidence": max(0.0, min(1.0, confidence)),
+        "reason": _preview_text(str(payload.get("reason") or "")),
+    }
+
+
+async def _classify_order_confirmation_with_llm(
+    *,
+    client: httpx.AsyncClient,
+    api_key: str,
+    model: str,
+    user_text: str,
+    session: dict[str, Any],
+    tool_name: str,
+    inputs: dict[str, Any],
+    tenant: dict[str, Any],
+) -> dict[str, Any]:
+    if has_explicit_confirmation(user_text):
+        return {"confirmed": True, "confidence": 1.0, "reason": "regex_confirmation", "source": "regex"}
+    if not _confirmation_classifier_enabled(tenant):
+        return {"confirmed": False, "confidence": 0.0, "reason": "classifier_disabled", "source": "disabled"}
+    lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    context = {
+        "customer_message": user_text,
+        "conversation_stage": session.get("stage"),
+        "last_intent": session.get("last_intent"),
+        "tool_name": tool_name,
+        "tool_inputs": inputs,
+        "active_order_name": session.get("last_sales_order_name"),
+        "lead_profile": {
+            "status": lead_profile.get("status"),
+            "next_action": lead_profile.get("next_action"),
+            "qualification_priority": lead_profile.get("qualification_priority"),
+            "product_interest": lead_profile.get("product_interest"),
+            "quantity": lead_profile.get("quantity"),
+            "uom": lead_profile.get("uom"),
+            "requested_items": lead_profile.get("requested_items"),
+            "requested_items_need_uom_confirmation": lead_profile.get("requested_items_need_uom_confirmation"),
+        },
+    }
+    payload = {
+        "model": model,
+        "instructions": (
+            "Classify whether the customer's latest message explicitly confirms proceeding with the current order or order change. "
+            "Handle any language, especially Hebrew. Return only compact JSON with keys: confirmed, confidence, reason. "
+            "confirmed must be true only when the message clearly authorizes proceeding with the current order/change in context. "
+            "Reluctant but affirmative confirmations can be true. Questions, new details, price requests, corrections, and negations must be false. "
+            "If ambiguous, return confirmed=false."
+        ),
+        "input": [{"role": "user", "content": json.dumps(context, ensure_ascii=False, default=str)}],
+        "max_output_tokens": 120,
+    }
+    response = await client.post(
+        "https://api.openai.com/v1/responses",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+    )
+    response.raise_for_status()
+    result = _parse_confirmation_classifier_response(_extract_output_text(response.json()))
+    result["source"] = "llm"
+    return result
+
+
 async def process_message_result(
     channel: str,
     channel_uid: str,
@@ -1177,12 +1274,46 @@ async def process_message_result(
                     payload={"inputs": inputs},
                 )
 
+                confirmation_result: dict[str, Any] | None = None
+                confirmation_override: bool | None = None
+                if tool_name in {"create_sales_order", "update_sales_order"}:
+                    try:
+                        confirmation_result = await _classify_order_confirmation_with_llm(
+                            client=client,
+                            api_key=settings.openai_api_key,
+                            model=settings.openai_model,
+                            user_text=user_text,
+                            session=session,
+                            tool_name=tool_name,
+                            inputs=inputs,
+                            tenant=tenant,
+                        )
+                        min_confidence = _confirmation_min_confidence(tenant)
+                        if (
+                            confirmation_result.get("confirmed")
+                            and float(confirmation_result.get("confidence") or 0) >= min_confidence
+                        ):
+                            confirmation_override = True
+                        _log_event(
+                            "order_confirmation_classified",
+                            company_code=company_code,
+                            channel=channel,
+                            channel_uid=channel_uid,
+                            tool_name=tool_name,
+                            min_confidence=min_confidence,
+                            classification=confirmation_result,
+                        )
+                    except Exception as exc:
+                        confirmation_result = {"confirmed": False, "confidence": 0.0, "reason": str(exc), "source": "error"}
+                        logger.warning("Order confirmation classifier failed: %s", exc)
+
                 policy_result = evaluate_tool_call(
                     tool_name=tool_name,
                     inputs=inputs,
                     session=session,
                     tenant=tenant,
                     user_text=user_text,
+                    confirmation_override=confirmation_override,
                 )
                 if policy_result:
                     parsed_result = policy_result
@@ -1201,6 +1332,7 @@ async def process_message_result(
                         lc=lc,
                         ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
                         lead_profile=session.get("lead_profile") if isinstance(session.get("lead_profile"), dict) else None,
+                        confirmation_override=confirmation_override,
                     )
                     try:
                         parsed_result = json.loads(result_str)
@@ -1252,6 +1384,8 @@ async def process_message_result(
                 )
 
                 summary = _tool_result_summary(tool_name, parsed_result if isinstance(parsed_result, dict) else {})
+                if confirmation_result:
+                    summary["confirmation_classification"] = confirmation_result
                 _log_event(
                     "tool_call_finished",
                     company_code=company_code,

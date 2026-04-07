@@ -22,6 +22,7 @@ def evaluate_tool_call(
     session: dict[str, Any],
     tenant: dict[str, Any],
     user_text: str,
+    confirmation_override: bool | None = None,
 ) -> dict[str, Any] | None:
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
     resolved_sales_policy = sales_policy(ai_policy)
@@ -112,7 +113,7 @@ def evaluate_tool_call(
                 "Sales order is below this tenant's minimum order total.",
                 "Explain the minimum order total and ask whether to adjust the order.",
             )
-        if not has_explicit_confirmation(user_text):
+        if not (has_explicit_confirmation(user_text) or confirmation_override is True):
             return _deny(
                 tool_name,
                 "Sales order creation requires clear customer confirmation.",

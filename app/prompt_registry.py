@@ -146,6 +146,7 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
         ("score", "Lead score"),
         ("temperature", "Lead temperature"),
         ("next_action", "Recommended next action"),
+        ("followup_strategy", "Follow-up strategy"),
         ("qualification_priority", "Qualification priority"),
         ("qualification_priority_reason", "Qualification priority reason"),
         ("created_at", "Lead created at"),

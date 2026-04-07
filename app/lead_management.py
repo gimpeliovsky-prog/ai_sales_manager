@@ -167,6 +167,7 @@ def empty_lead_profile() -> dict[str, Any]:
         "score": 0,
         "temperature": "cold",
         "next_action": "ask_need",
+        "followup_strategy": "generic_stalled",
         "qualification_priority": "product_need",
         "qualification_priority_reason": None,
         "source_channel": None,
@@ -652,6 +653,34 @@ def _set_qualification_priority(
     return profile
 
 
+def _followup_strategy_for(*, status: str, stage: str, profile: dict[str, Any]) -> str:
+    next_action = str(profile.get("next_action") or "")
+    if profile.get("requested_items_need_uom_confirmation") or next_action == "ask_unit":
+        return "uom_confirmation"
+    if profile.get("price_sensitivity") or next_action == "quote_or_clarify_price":
+        return "price_objection"
+    if profile.get("quote_status") in {"requested", "prepared", "sent"} or next_action == "quote_followup":
+        return "quote_followup"
+    if next_action == "ask_quantity":
+        return "catalog_browse_no_quantity"
+    if next_action == "ask_contact":
+        return "contact_missing"
+    if next_action == "confirm_order":
+        return "order_confirmation_missing"
+    if next_action == "ask_delivery_timing":
+        return "delivery_timing_missing"
+    if status == "stalled" or next_action == "follow_up_or_handoff":
+        return "generic_stalled"
+    if stage in {"discover", "lead_capture"} and profile.get("product_interest") and not profile.get("quantity"):
+        return "catalog_browse_no_quantity"
+    return "generic_stalled"
+
+
+def _set_followup_strategy(*, profile: dict[str, Any], status: str, stage: str) -> dict[str, Any]:
+    profile["followup_strategy"] = _followup_strategy_for(status=status, stage=stage, profile=profile)
+    return profile
+
+
 def _mark_lifecycle(
     *,
     profile: dict[str, Any],
@@ -802,6 +831,7 @@ def update_lead_profile_from_message(
         stage=resolved_stage,
         customer_identified=customer_identified,
     )
+    _set_followup_strategy(profile=profile, status=status, stage=resolved_stage)
     return _mark_lifecycle(
         profile=profile,
         previous_status=previous_status,
@@ -933,6 +963,11 @@ def update_lead_profile_from_tool(
         stage=str(stage or ""),
         customer_identified=customer_identified,
     )
+    _set_followup_strategy(
+        profile=profile,
+        status=str(profile.get("status") or "none"),
+        stage=str(stage or ""),
+    )
     return _mark_lifecycle(
         profile=profile,
         previous_status=previous_status,
@@ -989,6 +1024,7 @@ def build_lead_event_payload(
         "lead_score": profile.get("score"),
         "lead_temperature": profile.get("temperature"),
         "next_action": profile.get("next_action"),
+        "followup_strategy": profile.get("followup_strategy"),
         "qualification_priority": profile.get("qualification_priority"),
         "qualification_priority_reason": profile.get("qualification_priority_reason"),
         "requested_items": profile.get("requested_items"),
@@ -1414,6 +1450,7 @@ def mark_stalled_if_needed(
     profile["previous_status_before_stall"] = profile.get("status")
     profile["status"] = "stalled"
     profile["next_action"] = "follow_up_or_handoff"
+    _set_followup_strategy(profile=profile, status="stalled", stage="")
     return _mark_lifecycle(
         profile=profile,
         previous_status=previous_status,
@@ -1430,6 +1467,7 @@ def build_handoff_summary(session: dict[str, Any], *, reason: str | None = None)
         "lead_score": profile.get("score"),
         "lead_temperature": profile.get("temperature"),
         "next_action": profile.get("next_action"),
+        "followup_strategy": profile.get("followup_strategy"),
         "qualification_priority": profile.get("qualification_priority"),
         "qualification_priority_reason": profile.get("qualification_priority_reason"),
         "created_at": profile.get("created_at"),

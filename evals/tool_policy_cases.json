@@ -85,6 +85,91 @@
     }
   },
   {
+    "name": "create_order_allowed_when_ru_okay_lets_do_it",
+    "tool_name": "create_sales_order",
+    "inputs": {
+      "items": [
+        {
+          "item_code": "ITEM-001",
+          "qty": 2
+        }
+      ]
+    },
+    "session": {
+      "stage": "confirm",
+      "erp_customer_id": "CUST-0001",
+      "last_intent": "confirm_order"
+    },
+    "tenant": {
+      "ai_policy": {
+        "allowed_tools": [
+          "create_sales_order"
+        ]
+      }
+    },
+    "user_text": "окей давай",
+    "expected": {
+      "blocked": false
+    }
+  },
+  {
+    "name": "create_order_allowed_when_ru_reluctant_confirmation",
+    "tool_name": "create_sales_order",
+    "inputs": {
+      "items": [
+        {
+          "item_code": "ITEM-001",
+          "qty": 2
+        }
+      ]
+    },
+    "session": {
+      "stage": "confirm",
+      "erp_customer_id": "CUST-0001",
+      "last_intent": "confirm_order"
+    },
+    "tenant": {
+      "ai_policy": {
+        "allowed_tools": [
+          "create_sales_order"
+        ]
+      }
+    },
+    "user_text": "ну ладно",
+    "expected": {
+      "blocked": false
+    }
+  },
+  {
+    "name": "create_order_blocked_when_ru_negative_confirmation",
+    "tool_name": "create_sales_order",
+    "inputs": {
+      "items": [
+        {
+          "item_code": "ITEM-001",
+          "qty": 2
+        }
+      ]
+    },
+    "session": {
+      "stage": "confirm",
+      "erp_customer_id": "CUST-0001",
+      "last_intent": "confirm_order"
+    },
+    "tenant": {
+      "ai_policy": {
+        "allowed_tools": [
+          "create_sales_order"
+        ]
+      }
+    },
+    "user_text": "не надо оформляй",
+    "expected": {
+      "blocked": true,
+      "error_contains": "clear customer confirmation"
+    }
+  },
+  {
     "name": "invoice_blocked_when_tool_disabled",
     "tool_name": "create_invoice",
     "inputs": {

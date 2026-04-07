@@ -292,6 +292,7 @@ def _update_persisted_lead_record(
         "status",
         "lost_reason",
         "next_action",
+        "followup_strategy",
         "quote_status",
         "quote_accepted_at",
         "quote_rejected_at",
@@ -348,6 +349,7 @@ def _update_persisted_quote_record(
     for key in [
         "status",
         "next_action",
+        "followup_strategy",
         "quote_status",
         "quote_id",
         "quote_total",

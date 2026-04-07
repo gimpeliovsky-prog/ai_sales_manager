@@ -99,6 +99,7 @@ def _empty_session() -> dict[str, Any]:
             "score": 0,
             "temperature": "cold",
             "next_action": "ask_need",
+            "followup_strategy": "generic_stalled",
             "qualification_priority": "product_need",
             "qualification_priority_reason": None,
             "source_channel": None,

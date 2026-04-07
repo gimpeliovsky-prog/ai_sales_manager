@@ -10,6 +10,8 @@ DEFAULT_SALES_POLICY: dict[str, Any] = {
     "allow_stock_promises_without_tool": False,
     "allow_delivery_promises_without_tool": False,
     "allow_catalog_price_before_full_anchor": False,
+    "llm_confirmation_classifier_enabled": True,
+    "llm_confirmation_min_confidence": 0.72,
     "allow_order_without_registered_customer": False,
     "default_delivery_days": 0,
     "minimum_order_total": None,

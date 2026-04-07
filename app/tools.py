@@ -218,6 +218,7 @@ async def execute_tool(
     lc: LicenseClient,
     ai_policy: dict[str, Any] | None = None,
     lead_profile: dict[str, Any] | None = None,
+    confirmation_override: bool | None = None,
 ) -> str:
     try:
         result = await _dispatch(
@@ -233,13 +234,14 @@ async def execute_tool(
             lc,
             ai_policy,
             lead_profile,
+            confirmation_override,
         )
         return json.dumps(result, ensure_ascii=False, default=str)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
 
-async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order_name, current_lang, user_text, channel, channel_uid, lc, ai_policy=None, lead_profile=None):
+async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order_name, current_lang, user_text, channel, channel_uid, lc, ai_policy=None, lead_profile=None, confirmation_override=None):
     from app.buyer_resolver import create_buyer_from_intro
 
     if name == "get_product_catalog":
@@ -285,7 +287,7 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
         minimum_violation = minimum_order_violation(inp.get("items"), ai_policy)
         if minimum_violation:
             return {"error": "Order total is below the tenant minimum order total.", "error_code": "minimum_order_total_not_met", **minimum_violation}
-        if not _has_explicit_confirmation(user_text):
+        if not (_has_explicit_confirmation(user_text) or confirmation_override is True):
             return {"error": i18n_text("tool_error.order_confirmation_required", current_lang, ai_policy=ai_policy), "error_code": "order_confirmation_required"}
         delivery_date = inp.get("delivery_date") or earliest_delivery_date(ai_policy)
         return await lc.create_sales_order(company_code, erp_customer_id, delivery_date, inp["items"])

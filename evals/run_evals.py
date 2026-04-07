@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 from app.conversation_flow import derive_conversation_state, get_handoff_message  # noqa: E402
 from app.catalog_localization import catalog_lang, localize_catalog_result  # noqa: E402
 from app.i18n import text as i18n_text  # noqa: E402
+from app.interaction_patterns import has_explicit_confirmation  # noqa: E402
 from app.language_policy import resolve_conversation_language  # noqa: E402
 from app.lead_management import (  # noqa: E402
     build_handoff_summary,
@@ -101,6 +102,29 @@ def run_tool_policy_evals() -> list[str]:
                 failures.append(
                     f"{case['name']}: expected error containing {expected_fragment!r}, got {error_text!r}"
                 )
+    llm_confirmed = evaluate_tool_call(
+        tool_name="create_sales_order",
+        inputs={"items": [{"item_code": "ITEM-001", "qty": 2}]},
+        session={"stage": "confirm", "erp_customer_id": "CUST-0001", "last_intent": "confirm_order"},
+        tenant={"ai_policy": {"allowed_tools": ["create_sales_order"]}},
+        user_text="יאללה",
+        confirmation_override=True,
+    )
+    if llm_confirmed is not None:
+        failures.append(f"tool_policy_confirmation_override_allows_order: got {llm_confirmed!r}")
+    llm_not_confirmed = evaluate_tool_call(
+        tool_name="create_sales_order",
+        inputs={"items": [{"item_code": "ITEM-001", "qty": 2}]},
+        session={"stage": "confirm", "erp_customer_id": "CUST-0001", "last_intent": "confirm_order"},
+        tenant={"ai_policy": {"allowed_tools": ["create_sales_order"]}},
+        user_text="כמה זה עולה?",
+        confirmation_override=False,
+    )
+    if llm_not_confirmed is None:
+        failures.append("tool_policy_confirmation_override_false_still_blocks_order: expected block")
+    for phrase in ["סבבה", "בסדר", "אוקי", "אוקיי", "טוב", "מעולה", "סגור", "סגרנו", "יאללה"]:
+        if not has_explicit_confirmation(phrase):
+            failures.append(f"hebrew_confirmation_phrase_detected:{phrase}: expected True")
     return failures
 
 
@@ -341,6 +365,7 @@ def run_lead_management_evals() -> list[str]:
         "status": "quote_needed",
         "temperature": "warm",
         "next_action": "ask_unit",
+        "followup_strategy": "uom_confirmation",
         "quantity": 5.0,
         "price_sensitivity": True,
         "urgency": "soon",
@@ -420,6 +445,7 @@ def run_lead_management_evals() -> list[str]:
                 "requested_items_uom_assumption_status": "likely",
                 "qualification_priority": "unit_or_variant",
                 "next_action": "ask_unit",
+                "followup_strategy": "uom_confirmation",
             },
             "multi_item_order_list_treats_box_as_likely_but_unconfirmed",
         )
@@ -454,6 +480,7 @@ def run_lead_management_evals() -> list[str]:
                 "requested_items_uom_assumption_status": "confirmed",
                 "next_action": "ask_contact",
                 "qualification_priority": "contact",
+                "followup_strategy": "contact_missing",
             },
             "multi_item_order_confirms_likely_box_uom",
         )
@@ -644,11 +671,32 @@ def run_lead_management_evals() -> list[str]:
                 "status": "quote_needed",
                 "product_interest": "coffee machines",
                 "next_action": "quote_or_clarify_price",
+                "followup_strategy": "price_objection",
             },
         }
     )
-    if "price offer" not in action_followup:
-        failures.append(f"followup_message_uses_next_action_template: got {action_followup!r}")
+    if "adjust" not in action_followup or "alternative" not in action_followup:
+        failures.append(f"followup_message_uses_strategy_template: got {action_followup!r}")
+    strategy_override_followup = build_followup_message(
+        {
+            "lang": "en",
+            "lead_profile": {
+                "status": "quote_needed",
+                "product_interest": "coffee machines",
+                "next_action": "quote_or_clarify_price",
+                "followup_strategy": "price_objection",
+            },
+        },
+        {
+            "lead_management": {
+                "followup_templates_by_strategy": {
+                    "price_objection": {"en": "Custom objection follow-up for {product_interest}."}
+                }
+            }
+        },
+    )
+    if strategy_override_followup != "Custom objection follow-up for coffee machines.":
+        failures.append(f"followup_message_uses_strategy_override: got {strategy_override_followup!r}")
     custom_stage_followup = build_followup_message(
         {
             "lang": "en",

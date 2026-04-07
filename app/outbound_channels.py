@@ -112,10 +112,12 @@ def lost_reason_buttons(lead_id: str) -> list[list[dict[str, str]]]:
 
 
 def _template_for(lang: str, lead_config: dict[str, Any], profile: dict[str, Any]) -> str:
+    followup_strategy = str(profile.get("followup_strategy") or "")
     next_action = str(profile.get("next_action") or "")
     status = str(profile.get("status") or "")
     specific_template = (
-        _template_from_bucket(lead_config.get("followup_templates_by_next_action"), next_action, lang)
+        _template_from_bucket(lead_config.get("followup_templates_by_strategy"), followup_strategy, lang)
+        or _template_from_bucket(lead_config.get("followup_templates_by_next_action"), next_action, lang)
         or _template_from_bucket(lead_config.get("followup_templates_by_status"), status, lang)
     )
     if specific_template:
@@ -125,7 +127,7 @@ def _template_for(lang: str, lead_config: dict[str, Any], profile: dict[str, Any
         template = str(templates.get(lang) or templates.get("default") or "").strip()
         if template:
             return template
-    template_key = f"followup.{next_action}" if next_action else "followup.default"
+    template_key = f"followup.{followup_strategy}" if followup_strategy else f"followup.{next_action}" if next_action else "followup.default"
     return i18n_template(template_key, lang)
 
 

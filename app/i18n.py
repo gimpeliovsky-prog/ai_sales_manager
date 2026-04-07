@@ -62,23 +62,47 @@ DEFAULT_TRANSLATIONS: dict[str, dict[str, str]] = {
     "followup.ask_quantity": {
         "en": "Is your request about {product_interest} still relevant? Send the quantity you need and I will continue.",
     },
+    "followup.catalog_browse_no_quantity": {
+        "en": "I can continue with {product_interest}. Send the quantity you need and I will check the right option.",
+    },
     "followup.ask_unit": {
         "en": "Is your request about {product_interest} still relevant? Send the unit or package size and I will continue.",
+    },
+    "followup.uom_confirmation": {
+        "en": "I have {product_interest}. Please confirm the unit or package, for example boxes, pieces, or kg, and I will continue.",
     },
     "followup.ask_delivery_timing": {
         "en": "Is your request about {product_interest} still relevant? Send the delivery timing you need and I will continue.",
     },
+    "followup.delivery_timing_missing": {
+        "en": "I can continue with {product_interest}. Send the delivery timing you need and I will continue.",
+    },
     "followup.ask_contact": {
+        "en": "I can continue with {product_interest}. Please send your name and phone number so we can secure the offer.",
+    },
+    "followup.contact_missing": {
         "en": "I can continue with {product_interest}. Please send your name and phone number so we can secure the offer.",
     },
     "followup.confirm_order": {
         "en": "I can prepare the order for {product_interest}. Please confirm the details and I will continue.",
     },
+    "followup.order_confirmation_missing": {
+        "en": "I can prepare the order for {product_interest}. Please confirm the details and I will continue.",
+    },
     "followup.quote_or_clarify_price": {
         "en": "I can continue with a price offer for {product_interest}. Please confirm the quantity and package you need.",
     },
+    "followup.price_objection": {
+        "en": "I can help adjust {product_interest} by quantity, package, or alternative item. Send the quantity and unit you prefer and I will continue.",
+    },
+    "followup.quote_followup": {
+        "en": "I can continue with the offer for {product_interest}. If it is still relevant, send the quantity and package you want to proceed with.",
+    },
     "followup.follow_up_or_handoff": {
         "en": "Is your request about {product_interest} still relevant? If yes, send {next_step} and I will continue.",
+    },
+    "followup.generic_stalled": {
+        "en": "Is your request about {product_interest} still relevant? If yes, please send {next_step} and I'll continue.",
     },
     "next_step.ask_quantity": {
         "en": "the quantity you need",
