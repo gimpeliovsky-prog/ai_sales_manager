@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+from datetime import date, timedelta
+from typing import Any
+
+
+DEFAULT_SALES_POLICY: dict[str, Any] = {
+    "allow_discount_promises": False,
+    "discount_requires_owner": True,
+    "allow_stock_promises_without_tool": False,
+    "allow_delivery_promises_without_tool": False,
+    "allow_order_without_registered_customer": False,
+    "default_delivery_days": 0,
+    "minimum_order_total": None,
+    "proactive_followup_channels": ["telegram"],
+}
+
+
+def sales_policy(ai_policy: dict[str, Any] | None) -> dict[str, Any]:
+    policy = dict(DEFAULT_SALES_POLICY)
+    if isinstance(ai_policy, dict) and isinstance(ai_policy.get("sales_policy"), dict):
+        policy.update(ai_policy["sales_policy"])
+    return policy
+
+
+def earliest_delivery_date(ai_policy: dict[str, Any] | None) -> str:
+    policy = sales_policy(ai_policy)
+    try:
+        days = max(0, int(policy.get("default_delivery_days") or 0))
+    except (TypeError, ValueError):
+        days = 0
+    return (date.today() + timedelta(days=days)).isoformat()
+
+
+def order_total(items: Any) -> float | None:
+    if not isinstance(items, list):
+        return None
+    total = 0.0
+    seen_rate = False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            qty = float(item.get("qty") or 0)
+            rate = float(item.get("rate") or 0)
+        except (TypeError, ValueError):
+            continue
+        if rate:
+            seen_rate = True
+        total += qty * rate
+    return round(total, 2) if seen_rate else None
+
+
+def minimum_order_violation(items: Any, ai_policy: dict[str, Any] | None) -> dict[str, Any] | None:
+    policy = sales_policy(ai_policy)
+    minimum = policy.get("minimum_order_total")
+    if minimum in (None, ""):
+        return None
+    try:
+        minimum_value = float(minimum)
+    except (TypeError, ValueError):
+        return None
+    total = order_total(items)
+    if total is None or total >= minimum_value:
+        return None
+    return {
+        "minimum_order_total": minimum_value,
+        "current_order_total": total,
+    }
+
+
+def normalize_order_state(order: dict[str, Any] | None) -> dict[str, Any]:
+    data = order if isinstance(order, dict) else {}
+    status_parts = " ".join(
+        str(data.get(key) or "")
+        for key in [
+            "status",
+            "docstatus",
+            "delivery_status",
+            "billing_status",
+            "per_delivered",
+            "per_billed",
+        ]
+    ).casefold()
+    delivered = "delivered" in status_parts or str(data.get("per_delivered") or "") in {"100", "100.0"}
+    invoiced = "invoiced" in status_parts or "completed" in status_parts or str(data.get("per_billed") or "") in {"100", "100.0"}
+    cancelled = "cancel" in status_parts or str(data.get("docstatus") or "") == "2"
+    submitted = str(data.get("docstatus") or "") == "1" or "submitted" in status_parts
+    can_modify = bool(data.get("can_modify")) if "can_modify" in data else not (delivered or invoiced or cancelled)
+    if str(data.get("docstatus") or "") == "0" or "draft" in status_parts:
+        state = "draft"
+    elif cancelled:
+        state = "cancelled"
+    elif delivered:
+        state = "delivered"
+    elif invoiced:
+        state = "invoiced"
+    elif submitted:
+        state = "submitted"
+    else:
+        state = str(data.get("status") or "unknown").casefold() or "unknown"
+    return {
+        "sales_order_name": data.get("name") or data.get("sales_order_name"),
+        "order_state": state,
+        "can_modify": can_modify,
+        "status": data.get("status"),
+        "docstatus": data.get("docstatus"),
+        "delivery_status": data.get("delivery_status"),
+        "billing_status": data.get("billing_status"),
+        "per_delivered": data.get("per_delivered"),
+        "per_billed": data.get("per_billed"),
+        "items": data.get("items") if isinstance(data.get("items"), list) else [],
+        "order_total": data.get("grand_total") or data.get("rounded_total") or data.get("total") or data.get("net_total"),
+        "currency": data.get("currency") or data.get("company_currency"),
+    }

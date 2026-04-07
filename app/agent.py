@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -10,22 +10,34 @@ import httpx
 from app.buyer_resolver import create_buyer_from_intro, resolve_buyer
 from app.conversation_flow import advance_stage_after_tool, derive_conversation_state, get_handoff_message
 from app.config import get_settings
+from app.i18n import text as i18n_text
 from app.interaction_patterns import has_add_to_order_intent, has_explicit_confirmation
 from app.language_policy import resolve_conversation_language
+from app.lead_management import (
+    build_lead_event_payload,
+    build_handoff_summary,
+    ensure_lead_identity,
+    mark_stalled_if_needed,
+    normalize_lead_profile,
+    sales_alert_event_types,
+    sales_event_type,
+    update_lead_profile_from_message,
+    update_lead_profile_source,
+    update_lead_profile_from_tool,
+)
 from app.license_client import get_license_client
+from app.outbound_channels import mark_sales_owner_notification, notify_sales_owner
 from app.prompt_registry import build_runtime_system_prompt
-from app.session_store import load_session, new_session, save_session
+from app.sales_dedupe import detect_duplicate_lead
+from app.sales_lead_repository import get_sales_lead_repository
+from app.sales_quality import update_session_quality
+from app.sales_reporting import lead_snapshot
+from app.sales_timeline import append_lead_timeline_event
+from app.session_store import load_session, new_session, save_session, save_session_snapshot
 from app.tool_policy import evaluate_tool_call
 from app.tools import TOOLS, execute_tool
 
 logger = logging.getLogger(__name__)
-
-_INTRO_MESSAGES = {
-    "ru": "Здравствуйте! Я менеджер по продажам. Прежде чем продолжить, скажите, пожалуйста, ваше имя и номер телефона.",
-    "en": "Hello! I'm a sales manager. Before we continue, could you please tell me your name and phone number?",
-    "he": "שלום! אני מנהל מכירות. לפני שנמשיך, אפשר בבקשה את השם ומספר הטלפון שלך?",
-    "ar": "مرحبًا! أنا مدير مبيعات. قبل أن نتابع، هل يمكنك من فضلك إرسال اسمك ورقم هاتفك؟",
-}
 
 _PHONE_RE = re.compile(r"(\+?\d[\d\s\-\(\)]{7,}\d)")
 
@@ -51,12 +63,17 @@ def _tool_result_summary(tool_name: str, result: dict[str, Any]) -> dict[str, An
     }
     if result.get("error"):
         summary["error"] = _preview_text(str(result.get("error")))
+    if result.get("error_code"):
+        summary["error_code"] = result.get("error_code")
     if result.get("name"):
         summary["name"] = result.get("name")
     if result.get("erp_customer_id"):
         summary["erp_customer_id"] = result.get("erp_customer_id")
     if result.get("order_print_url"):
         summary["has_order_print_url"] = True
+    if tool_name == "get_sales_order_status":
+        summary["order_state"] = result.get("order_state")
+        summary["can_modify"] = result.get("can_modify")
     return summary
 
 
@@ -72,6 +89,101 @@ def _handoff_target(tenant: dict[str, Any]) -> dict[str, Any]:
         "handoff_target_destination": target.get("destination"),
         "handoff_target_instructions": target.get("instructions"),
     }
+
+
+def _lead_management_config(tenant: dict[str, Any]) -> dict[str, Any]:
+    ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
+    lead_config = ai_policy.get("lead_management") if isinstance(ai_policy.get("lead_management"), dict) else {}
+    return lead_config
+
+
+def _playbook_version(tenant: dict[str, Any]) -> str | None:
+    ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
+    value = ai_policy.get("playbook_version") or ai_policy.get("sales_playbook_version")
+    if value:
+        return str(value).strip()
+    prompt_overrides = ai_policy.get("prompt_overrides") if isinstance(ai_policy.get("prompt_overrides"), dict) else {}
+    value = prompt_overrides.get("playbook_version")
+    return str(value).strip() if value else None
+
+
+def _lead_idle_after(tenant: dict[str, Any]) -> timedelta:
+    lead_config = _lead_management_config(tenant)
+    try:
+        minutes = int(lead_config.get("stalled_after_minutes", 60) or 60)
+    except (TypeError, ValueError):
+        minutes = 60
+    return timedelta(minutes=max(5, minutes))
+
+
+def _dedupe_config(tenant: dict[str, Any]) -> dict[str, Any]:
+    lead_config = _lead_management_config(tenant)
+    return lead_config.get("dedupe") if isinstance(lead_config.get("dedupe"), dict) else lead_config
+
+
+async def _apply_lead_dedupe(
+    *,
+    company_code: str,
+    channel: str,
+    channel_uid: str,
+    session: dict[str, Any],
+    tenant: dict[str, Any],
+) -> None:
+    config = _dedupe_config(tenant)
+    if config.get("dedupe_enabled", True) is False:
+        return
+    profile = normalize_lead_profile(session.get("lead_profile"))
+    if profile.get("duplicate_of_lead_id") or profile.get("merged_into_lead_id"):
+        return
+    if profile.get("status") in {"none", "won", "lost"}:
+        return
+    try:
+        window_days = int(config.get("dedupe_window_days", 7) or 7)
+    except (TypeError, ValueError):
+        window_days = 7
+    try:
+        scan_limit = int(config.get("dedupe_scan_limit", 5000) or 5000)
+    except (TypeError, ValueError):
+        scan_limit = 5000
+    try:
+        records = await get_sales_lead_repository().list_by_company(
+            company_code=company_code,
+            limit=max(100, min(50000, scan_limit)),
+        )
+    except Exception as exc:
+        logger.warning("Lead dedupe lookup failed for %s: %s", company_code, exc)
+        return
+    candidates = [record.get("lead") for record in records if isinstance(record, dict) and isinstance(record.get("lead"), dict)]
+    current = lead_snapshot(channel=channel, uid=channel_uid, session=session)
+    match = detect_duplicate_lead(current=current, candidates=candidates, window_days=window_days)
+    if not match:
+        profile["dedupe_checked_at"] = datetime.now(UTC).isoformat()
+        session["lead_profile"] = profile
+        return
+    profile.update(
+        {
+            "duplicate_of_lead_id": match.get("duplicate_of_lead_id"),
+            "dedupe_reason": match.get("dedupe_reason"),
+            "dedupe_score": match.get("dedupe_score"),
+            "dedupe_checked_at": match.get("dedupe_checked_at"),
+            "merged_into_lead_id": match.get("duplicate_of_lead_id"),
+        }
+    )
+    session["lead_profile"] = profile
+    append_lead_timeline_event(
+        session,
+        event_type="lead_duplicate_detected",
+        payload={
+            "duplicate_of_lead_id": match.get("duplicate_of_lead_id"),
+            "dedupe_reason": match.get("dedupe_reason"),
+            "dedupe_score": match.get("dedupe_score"),
+            "merged_into_lead_id": match.get("duplicate_of_lead_id"),
+        },
+    )
+
+
+def _lead_event_payload(session: dict[str, Any], previous_profile: dict[str, Any] | None = None) -> dict[str, Any]:
+    return build_lead_event_payload(session=session, previous_profile=previous_profile)
 
 
 async def _emit_control_plane_event(
@@ -94,6 +206,119 @@ async def _emit_control_plane_event(
         )
     except Exception as exc:
         logger.warning("Failed to send AI event %s to License Server: %s", event_type, exc)
+
+
+async def _emit_sales_event_if_changed(
+    *,
+    lc: Any,
+    company_code: str,
+    channel: str,
+    channel_uid: str,
+    session: dict[str, Any],
+    previous_profile: dict[str, Any] | None,
+    lead_config: dict[str, Any] | None = None,
+) -> None:
+    event_type = sales_event_type(previous_profile, session.get("lead_profile"))
+    alert_event_types = sales_alert_event_types(previous_profile, session.get("lead_profile"))
+    if not event_type and not alert_event_types:
+        return
+    profile = normalize_lead_profile(session.get("lead_profile"))
+    previous = normalize_lead_profile(previous_profile)
+    if previous.get("status") == "none" and profile.get("status") != "none" and event_type != "lead_created":
+        append_lead_timeline_event(
+            session,
+            event_type="lead_created",
+            payload={"previous_status": previous.get("status"), "status": profile.get("status")},
+        )
+        await _emit_control_plane_event(
+            lc=lc,
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            event_type="lead_created",
+            payload=_lead_event_payload(session, previous_profile),
+        )
+    profile["last_sales_event"] = event_type or alert_event_types[-1]
+    session["lead_profile"] = profile
+    if event_type:
+        append_lead_timeline_event(
+            session,
+            event_type=event_type,
+            payload={"previous_status": previous.get("status"), "status": profile.get("status")},
+        )
+        await _emit_control_plane_event(
+            lc=lc,
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            event_type=event_type,
+            payload=_lead_event_payload(session, previous_profile),
+        )
+    for alert_event_type in alert_event_types:
+        append_lead_timeline_event(
+            session,
+            event_type=alert_event_type,
+            payload={
+                "previous_temperature": previous.get("temperature"),
+                "temperature": profile.get("temperature"),
+                "next_action": profile.get("next_action"),
+                "quote_status": profile.get("quote_status"),
+            },
+        )
+        await _emit_control_plane_event(
+            lc=lc,
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            event_type=alert_event_type,
+            payload=_lead_event_payload(session, previous_profile),
+        )
+        if alert_event_type in {"hot_lead_detected", "manager_attention_required"}:
+            if normalize_lead_profile(session.get("lead_profile")).get("sales_owner_status") in {"accepted", "closed_not_target"}:
+                continue
+            delivery = await _notify_sales_owner_if_configured(
+                lead_config=lead_config or {},
+                session=session,
+                reason=alert_event_type,
+            )
+            mark_sales_owner_notification(session, delivery)
+            if delivery.get("sent"):
+                append_lead_timeline_event(
+                    session,
+                    event_type="sales_owner_notified",
+                    payload={"reason": alert_event_type, "sales_owner_delivery": delivery},
+                )
+                await _emit_control_plane_event(
+                    lc=lc,
+                    company_code=company_code,
+                    channel=channel,
+                    channel_uid=channel_uid,
+                    event_type="sales_owner_notified",
+                    payload={
+                        **_lead_event_payload(session, previous_profile),
+                        "reason": alert_event_type,
+                        "sales_owner_delivery": {
+                            "sent": True,
+                            "status": delivery.get("status"),
+                            "channel": delivery.get("channel"),
+                        },
+                    },
+                )
+
+
+async def _notify_sales_owner_if_configured(
+    *,
+    lead_config: dict[str, Any],
+    session: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    if not lead_config.get("sales_owner_telegram_chat_id") and not lead_config.get("sales_owner_telegram_username"):
+        return {"sent": False, "status": "sales_owner_not_configured"}
+    try:
+        return await notify_sales_owner(session=session, ai_policy={"lead_management": lead_config}, reason=reason)
+    except Exception as exc:
+        logger.warning("Failed to notify sales owner: %s", exc)
+        return {"sent": False, "status": "send_failed", "error": str(exc)}
 
 
 async def _emit_transcript_message(
@@ -182,7 +407,7 @@ def _extract_intro_contact(user_text: str) -> tuple[str | None, str | None]:
 
 
 def get_intro_message(lang: str) -> str:
-    return _INTRO_MESSAGES.get(lang, _INTRO_MESSAGES["ru"])
+    return i18n_text("intro.sales_contact", lang)
 
 
 def _apply_buyer_context(session: dict[str, Any], buyer_result: dict[str, Any]) -> None:
@@ -212,13 +437,7 @@ def _has_add_to_order_intent(user_text: str) -> bool:
 
 
 def _existing_order_message(lang: str, order_name: str) -> str:
-    if lang == "ru":
-        return f"Заказ уже создан. Текущий активный заказ: {order_name}."
-    if lang == "he":
-        return f"ההזמנה כבר נוצרה. ההזמנה הפעילה כרגע היא {order_name}."
-    if lang == "ar":
-        return f"تم إنشاء الطلب بالفعل. الطلب النشط الحالي هو {order_name}."
-    return f"Your order has already been created. The current active order is {order_name}."
+    return i18n_text("order.already_created", lang, {"order_name": order_name})
 
 def _is_returning_customer(session: dict[str, Any]) -> bool:
     return bool(session.get("recent_sales_orders") or session.get("recent_sales_invoices"))
@@ -226,13 +445,8 @@ def _is_returning_customer(session: dict[str, Any]) -> bool:
 
 def _returning_customer_prefix(lang: str, buyer_name: str | None = None) -> str:
     display_name = str(buyer_name or "").strip()
-    if lang == "ru":
-        return f"Рад помочь снова, {display_name}." if display_name else "Рад помочь снова."
-    if lang == "he":
-        return f"שמח לעזור שוב, {display_name}." if display_name else "שמח לעזור שוב."
-    if lang == "ar":
-        return f"سعيد بمساعدتك مرة أخرى، {display_name}." if display_name else "سعيد بمساعدتك مرة أخرى."
-    return f"Glad to help again, {display_name}." if display_name else "Glad to help again."
+    suffix = f", {display_name}" if display_name else ""
+    return i18n_text("returning_customer.prefix", lang, {"customer_suffix": suffix})
 
 def _maybe_prefix_returning_customer(session: dict[str, Any], lang: str, reply: str) -> str:
     if not reply:
@@ -255,6 +469,7 @@ def _build_system_prompt(
     last_sales_order_name: str | None = None,
     recent_sales_orders: list[dict[str, Any]] | None = None,
     recent_sales_invoices: list[dict[str, Any]] | None = None,
+    lead_profile: dict[str, Any] | None = None,
     handoff_required: bool = False,
     handoff_reason: str | None = None,
 ) -> str:
@@ -269,6 +484,7 @@ def _build_system_prompt(
         last_sales_order_name=last_sales_order_name,
         recent_sales_orders=recent_sales_orders,
         recent_sales_invoices=recent_sales_invoices,
+        lead_profile=lead_profile,
         handoff_required=handoff_required,
         handoff_reason=handoff_reason,
     )
@@ -380,7 +596,13 @@ async def _create_openai_response(
     return response.json()
 
 
-async def process_message_result(channel: str, channel_uid: str, user_text: str, tenant: dict) -> dict[str, Any]:
+async def process_message_result(
+    channel: str,
+    channel_uid: str,
+    user_text: str,
+    tenant: dict,
+    channel_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     settings = get_settings()
     company_code: str = tenant["company_code"]
     lc = get_license_client()
@@ -409,6 +631,23 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
     if session.get("company_code") and session["company_code"] != company_code:
         session = new_session(company_code=company_code)
     session["company_code"] = company_code
+    if isinstance(channel_context, dict) and channel_context:
+        merged_channel_context = dict(session.get("channel_context") or {})
+        merged_channel_context.update(channel_context)
+        session["channel_context"] = merged_channel_context
+    session["lead_profile"] = ensure_lead_identity(
+        current_profile=session.get("lead_profile"),
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+    )
+    if _playbook_version(tenant):
+        session["lead_profile"]["playbook_version"] = _playbook_version(tenant)
+    session["lead_profile"] = update_lead_profile_source(
+        current_profile=session.get("lead_profile"),
+        channel=channel,
+        channel_context=session.get("channel_context") if isinstance(session.get("channel_context"), dict) else {},
+    )
     default_lang = tenant.get("ai_language", "ru")
     current_lang, lang_to_lock = resolve_conversation_language(
         locked_lang=session.get("lang"),
@@ -417,6 +656,22 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
     )
     if lang_to_lock:
         session["lang"] = lang_to_lock
+    previous_stalled_profile = normalize_lead_profile(session.get("lead_profile"))
+    session["lead_profile"] = mark_stalled_if_needed(
+        current_profile=previous_stalled_profile,
+        last_interaction_at=session.get("last_interaction_at"),
+        idle_after=_lead_idle_after(tenant),
+    )
+    await save_session_snapshot(channel, channel_uid, session)
+    await _emit_sales_event_if_changed(
+        lc=lc,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        session=session,
+        previous_profile=previous_stalled_profile,
+        lead_config=_lead_management_config(tenant),
+    )
 
     buyer_result, needs_intro = await resolve_buyer(
         session=session,
@@ -485,6 +740,34 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
             ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
         )
     )
+    previous_lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    session["lead_profile"] = update_lead_profile_from_message(
+        current_profile=previous_lead_profile,
+        user_text=user_text,
+        stage=session.get("stage"),
+        behavior_class=session.get("behavior_class"),
+        intent=session.get("last_intent"),
+        customer_identified=bool(session.get("erp_customer_id")),
+        active_order_name=active_order_name,
+        lead_config=_lead_management_config(tenant),
+    )
+    await _apply_lead_dedupe(
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        session=session,
+        tenant=tenant,
+    )
+    await save_session_snapshot(channel, channel_uid, session)
+    await _emit_sales_event_if_changed(
+        lc=lc,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        session=session,
+        previous_profile=previous_lead_profile,
+        lead_config=_lead_management_config(tenant),
+    )
     _log_event(
         "conversation_state",
         company_code=company_code,
@@ -499,6 +782,7 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
         intent_confidence=session.get("last_intent_confidence"),
         handoff_required=session.get("handoff_required"),
         handoff_reason=session.get("handoff_reason"),
+        lead_profile=session.get("lead_profile"),
         has_customer=bool(session.get("erp_customer_id")),
         has_active_order=bool(active_order_name),
         user_text_preview=_preview_text(user_text),
@@ -519,6 +803,7 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
             "intent_confidence": session.get("last_intent_confidence"),
             "handoff_required": session.get("handoff_required"),
             "handoff_reason": session.get("handoff_reason"),
+            "lead_profile": session.get("lead_profile"),
             "has_customer": bool(session.get("erp_customer_id")),
             "has_active_order": bool(active_order_name),
         },
@@ -532,10 +817,48 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
         role="user",
         content=user_text,
         message_type="chat",
-        payload={"lang": current_lang},
+        payload={"lang": current_lang, "lead_profile": session.get("lead_profile")},
     )
 
-    if needs_intro and not session.get("erp_customer_id"):
+    if normalize_lead_profile(session.get("lead_profile")).get("sales_owner_status") == "accepted":
+        reply = get_handoff_message(
+            current_lang,
+            "sales_owner_accepted",
+            ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
+        )
+        session["messages"].append({"role": "user", "content": user_text})
+        session["messages"].append({"role": "assistant", "content": reply})
+        append_lead_timeline_event(
+            session,
+            event_type="human_takeover_active",
+            payload={"reason": "sales_owner_accepted"},
+        )
+        await save_session(channel, channel_uid, session)
+        await _emit_control_plane_event(
+            lc=lc,
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            event_type="human_takeover_active",
+            payload={"lead_profile": session.get("lead_profile")},
+        )
+        await _emit_transcript_message(
+            lc=lc,
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            session=session,
+            role="assistant",
+            content=reply,
+            message_type="handoff",
+            payload={"reason": "sales_owner_accepted", "lead_profile": session.get("lead_profile")},
+        )
+        result["handoff_required"] = True
+        result["handoff_reason"] = "sales_owner_accepted"
+        result["text"] = reply
+        return result
+
+    if needs_intro and not session.get("erp_customer_id") and session.get("stage") == "identify":
         if session.get("handoff_required"):
             reply = get_handoff_message(
                 current_lang,
@@ -567,6 +890,8 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
                     "erp_customer_id": session.get("erp_customer_id"),
                     "buyer_name": session.get("buyer_name"),
                     "active_order_name": session.get("last_sales_order_name"),
+                    "handoff_summary": build_handoff_summary(session, reason=session.get("handoff_reason")),
+                    "lead_profile": session.get("lead_profile"),
                     **_handoff_target(tenant),
                 },
             )
@@ -598,7 +923,10 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
                 role="assistant",
                 content=reply,
                 message_type="handoff",
-                payload={"reason": session.get("handoff_reason")},
+                payload={
+                    "reason": session.get("handoff_reason"),
+                    "handoff_summary": build_handoff_summary(session, reason=session.get("handoff_reason")),
+                },
             )
             return result
         reply = get_intro_message(current_lang)
@@ -725,6 +1053,8 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
                 "erp_customer_id": session.get("erp_customer_id"),
                 "buyer_name": session.get("buyer_name"),
                 "active_order_name": session.get("last_sales_order_name"),
+                "handoff_summary": build_handoff_summary(session, reason=session.get("handoff_reason")),
+                "lead_profile": session.get("lead_profile"),
                 **_handoff_target(tenant),
             },
         )
@@ -756,7 +1086,10 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
             role="assistant",
             content=final_reply,
             message_type="handoff",
-            payload={"reason": session.get("handoff_reason")},
+            payload={
+                "reason": session.get("handoff_reason"),
+                "handoff_summary": build_handoff_summary(session, reason=session.get("handoff_reason")),
+            },
         )
         return result
 
@@ -778,6 +1111,7 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
                 last_sales_order_name=session.get("last_sales_order_name"),
                 recent_sales_orders=session.get("recent_sales_orders"),
                 recent_sales_invoices=session.get("recent_sales_invoices"),
+                lead_profile=session.get("lead_profile"),
                 handoff_required=bool(session.get("handoff_required")),
                 handoff_reason=session.get("handoff_reason"),
             )
@@ -826,6 +1160,7 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
                         "tool_name": tool_name,
                         "stage": session.get("stage"),
                         "behavior_class": session.get("behavior_class"),
+                        "lead_profile": session.get("lead_profile"),
                         "inputs": inputs,
                     },
                 )
@@ -864,6 +1199,7 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
                         channel=channel,
                         channel_uid=channel_uid,
                         lc=lc,
+                        ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
                     )
                     try:
                         parsed_result = json.loads(result_str)
@@ -893,6 +1229,26 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
                         }
                     )
                 advance_stage_after_tool(session, tool_name, parsed_result)
+                previous_tool_lead_profile = normalize_lead_profile(session.get("lead_profile"))
+                session["lead_profile"] = update_lead_profile_from_tool(
+                    current_profile=previous_tool_lead_profile,
+                    tool_name=tool_name,
+                    inputs=inputs,
+                    tool_result=parsed_result if isinstance(parsed_result, dict) else {},
+                    stage=session.get("stage"),
+                    customer_identified=bool(session.get("erp_customer_id")),
+                    active_order_name=session.get("last_sales_order_name"),
+                )
+                await save_session_snapshot(channel, channel_uid, session)
+                await _emit_sales_event_if_changed(
+                    lc=lc,
+                    company_code=company_code,
+                    channel=channel,
+                    channel_uid=channel_uid,
+                    session=session,
+                    previous_profile=previous_tool_lead_profile,
+                    lead_config=_lead_management_config(tenant),
+                )
 
                 summary = _tool_result_summary(tool_name, parsed_result if isinstance(parsed_result, dict) else {})
                 _log_event(
@@ -913,10 +1269,21 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
                     payload={
                         "tool_name": tool_name,
                         "stage": session.get("stage"),
+                        "lead_profile": session.get("lead_profile"),
                         **summary,
                     },
                 )
+                append_lead_timeline_event(
+                    session,
+                    event_type="tool_call_finished",
+                    payload={"tool_name": tool_name, **summary},
+                )
                 if tool_name == "create_sales_order" and parsed_result.get("name"):
+                    append_lead_timeline_event(
+                        session,
+                        event_type="order_created",
+                        payload={"name": parsed_result.get("name"), "tool_name": tool_name},
+                    )
                     await _emit_control_plane_event(
                         lc=lc,
                         company_code=company_code,
@@ -926,6 +1293,11 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
                         payload={"name": parsed_result.get("name")},
                     )
                 if tool_name == "create_invoice" and parsed_result.get("name"):
+                    append_lead_timeline_event(
+                        session,
+                        event_type="invoice_created",
+                        payload={"name": parsed_result.get("name"), "tool_name": tool_name},
+                    )
                     await _emit_control_plane_event(
                         lc=lc,
                         company_code=company_code,
@@ -964,6 +1336,31 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
     final_reply = _maybe_prefix_returning_customer(session, current_lang, final_reply)
     session["messages"].append({"role": "assistant", "content": final_reply})
     session["messages"] = session["messages"][-40:]
+    previous_quality_flags = set(session.get("quality_flags") or []) if isinstance(session.get("quality_flags"), list) else set()
+    quality = update_session_quality(session, ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None)
+    if quality.get("quality_flags"):
+        append_lead_timeline_event(
+            session,
+            event_type="conversation_quality_flagged",
+            payload={
+                "quality_score": quality.get("conversation_quality_score"),
+                "quality_flags": quality.get("quality_flags"),
+            },
+        )
+        new_quality_flags = set(quality.get("quality_flags") or []) - previous_quality_flags
+        if new_quality_flags & {"risky_promise_without_tool", "discount_promise_blocked_by_sales_policy", "stock_promise_without_tool", "delivery_promise_without_tool"}:
+            delivery = await _notify_sales_owner_if_configured(
+                session=session,
+                lead_config=_lead_management_config(tenant),
+                reason="sales_quality_risk",
+            )
+            mark_sales_owner_notification(session, delivery)
+            if delivery.get("sent"):
+                append_lead_timeline_event(
+                    session,
+                    event_type="sales_owner_notified",
+                    payload={"reason": "sales_quality_risk", "sales_owner_delivery": delivery},
+                )
     await save_session(channel, channel_uid, session)
     _log_event(
         "conversation_outcome",
@@ -974,6 +1371,7 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
         stage=session.get("stage"),
         behavior_class=session.get("behavior_class"),
         handoff_required=session.get("handoff_required"),
+        lead_profile=session.get("lead_profile"),
         active_order_name=session.get("last_sales_order_name"),
         document_count=len(result.get("documents", [])),
         reply_preview=_preview_text(final_reply),
@@ -989,6 +1387,7 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
             "stage": session.get("stage"),
             "behavior_class": session.get("behavior_class"),
             "handoff_required": session.get("handoff_required"),
+            "lead_profile": session.get("lead_profile"),
             "active_order_name": session.get("last_sales_order_name"),
             "document_count": len(result.get("documents", [])),
         },
@@ -1002,6 +1401,7 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
             event_type="conversation_closed",
             payload={
                 "active_order_name": session.get("last_sales_order_name"),
+                "lead_profile": session.get("lead_profile"),
             },
         )
     await _emit_transcript_message(
@@ -1013,12 +1413,18 @@ async def process_message_result(channel: str, channel_uid: str, user_text: str,
         role="assistant",
         content=final_reply,
         message_type="closed" if session.get("stage") == "closed" else "chat",
-        payload={"documents": result.get("documents", [])},
+        payload={"documents": result.get("documents", []), "lead_profile": session.get("lead_profile")},
     )
     result["text"] = final_reply
     return result
 
 
-async def process_message(channel: str, channel_uid: str, user_text: str, tenant: dict) -> str:
-    result = await process_message_result(channel, channel_uid, user_text, tenant)
+async def process_message(
+    channel: str,
+    channel_uid: str,
+    user_text: str,
+    tenant: dict,
+    channel_context: dict[str, Any] | None = None,
+) -> str:
+    result = await process_message_result(channel, channel_uid, user_text, tenant, channel_context=channel_context)
     return str(result.get("text") or "")

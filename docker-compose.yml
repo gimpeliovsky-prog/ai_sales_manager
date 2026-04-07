@@ -13,6 +13,26 @@ services:
     networks:
       - ai_internal
 
+  ai-postgres:
+    image: postgres:16-alpine
+    container_name: ai_postgres
+    restart: unless-stopped
+    profiles:
+      - postgres
+    environment:
+      POSTGRES_DB: ${SALES_LEAD_POSTGRES_DB:-ai_sales}
+      POSTGRES_USER: ${SALES_LEAD_POSTGRES_USER:-ai_sales}
+      POSTGRES_PASSWORD: ${SALES_LEAD_POSTGRES_PASSWORD:-ai_sales}
+    volumes:
+      - ai_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - ai_internal
+
   ai-sales-manager:
     container_name: ai_sales_manager
     build: .
@@ -49,3 +69,6 @@ networks:
     external: true
   ai_internal:
     internal: true
+
+volumes:
+  ai_postgres_data:

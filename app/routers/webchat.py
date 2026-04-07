@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -21,6 +22,33 @@ def _origin_allowed(tenant: dict, origin: str | None) -> bool:
         return False
     normalized_allowed = {str(item).strip().rstrip("/") for item in allowed_origins if str(item).strip()}
     return normalized_origin in normalized_allowed
+
+
+def _webchat_source_context(websocket: WebSocket, company_code: str) -> dict[str, Any]:
+    query = websocket.query_params
+    source_context: dict[str, Any] = {
+        "webchat_company_code": company_code,
+        "origin": websocket.headers.get("origin"),
+        "referrer": websocket.headers.get("referer"),
+    }
+    for key in [
+        "campaign",
+        "source_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "landing_page",
+        "page_url",
+        "url",
+        "product_page",
+        "product_url",
+    ]:
+        value = query.get(key)
+        if value:
+            source_context[key] = value
+    return source_context
 
 
 @router.websocket("/{company_code}/{session_id}")
@@ -48,7 +76,13 @@ async def webchat_ws(websocket: WebSocket, company_code: str, session_id: str):
                 await clear_session("webchat", session_id)
                 await websocket.send_text("Диалог сброшен.")
                 continue
-            reply = await process_message(channel="webchat", channel_uid=session_id, user_text=text, tenant=tenant)
+            reply = await process_message(
+                channel="webchat",
+                channel_uid=session_id,
+                user_text=text,
+                tenant=tenant,
+                channel_context=_webchat_source_context(websocket, company_code),
+            )
             await websocket.send_text(reply)
     except WebSocketDisconnect:
         logger.info("WebChat [%s] session %s disconnected", company_code, session_id)

@@ -6,18 +6,23 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Path, Request
 
 from app.agent import get_intro_message, process_message_result
+from app.i18n import text as i18n_text
+from app.lead_management import apply_sales_owner_action, build_lead_event_payload, normalize_telegram_username
 from app.license_client import get_license_client
-from app.session_store import clear_session, load_session, save_session
+from app.outbound_channels import lost_reason_buttons
+from app.sales_timeline import append_lead_timeline_event
+from app.session_store import (
+    clear_session,
+    load_session,
+    resolve_lead_session,
+    save_sales_owner_telegram_chat,
+    save_session,
+    save_session_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_WELCOME_MESSAGES = {
-    "ru": "Здравствуйте! Чем могу помочь?",
-    "en": "Hello! How can I help you today?",
-    "he": "שלום! איך אפשר לעזור לך היום?",
-    "ar": "مرحبا! كيف يمكنني مساعدتك اليوم؟",
-}
 _ORDER_PDF_RE = re.compile(
     r"^(?:/order|send me order|send order|send my order|order pdf|order file|пришли заказ|отправь заказ)$",
     re.IGNORECASE,
@@ -37,11 +42,13 @@ _CONFIRM_PROMPT_RE = re.compile(
     r")\s*$"
 )
 _ORDER_NAME_RE = re.compile(r"\bSAL-ORD-\d{4}-\d+\b", re.IGNORECASE)
+_OWNER_CALLBACK_RE = re.compile(r"^lead_owner:(accept|reassign|close_menu):([A-Za-z0-9_:-]+)$")
+_OWNER_CLOSE_REASON_RE = re.compile(r"^lead_close_reason:([a-z_]+):([A-Za-z0-9_:-]+)$")
 
 
 def _language_from_telegram_message(message: dict, tenant: dict, session_lang: str | None = None) -> str:
-    if session_lang in _WELCOME_MESSAGES:
-        return session_lang
+    if str(session_lang or "").strip():
+        return str(session_lang).strip().lower().replace("_", "-").split("-", 1)[0]
     raw_code = str((message.get("from") or {}).get("language_code") or "").strip().lower()
     if raw_code.startswith("ru"):
         return "ru"
@@ -51,8 +58,36 @@ def _language_from_telegram_message(message: dict, tenant: dict, session_lang: s
         return "he"
     if raw_code.startswith("ar"):
         return "ar"
+    if re.match(r"^[a-z]{2,3}(?:[-_][a-z0-9]+)?$", raw_code):
+        return raw_code.replace("_", "-").split("-", 1)[0]
     tenant_lang = tenant.get("ai_language", "ru")
-    return tenant_lang if tenant_lang in _WELCOME_MESSAGES else "ru"
+    return str(tenant_lang or "auto").strip().lower().replace("_", "-").split("-", 1)[0] or "auto"
+
+
+def _lead_management_config(tenant: dict) -> dict:
+    ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
+    return ai_policy.get("lead_management") if isinstance(ai_policy.get("lead_management"), dict) else {}
+
+
+async def _remember_sales_owner_chat_if_configured(tenant: dict, message: dict, chat_id: str) -> bool:
+    lead_config = _lead_management_config(tenant)
+    owner_username = normalize_telegram_username(lead_config.get("sales_owner_telegram_username"))
+    if not owner_username:
+        return False
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    if str(chat.get("type") or "").lower() != "private":
+        return False
+    user = message.get("from") if isinstance(message.get("from"), dict) else {}
+    sender_username = normalize_telegram_username(user.get("username"))
+    if sender_username != owner_username:
+        return False
+    await save_sales_owner_telegram_chat(
+        company_code=str(tenant.get("company_code") or ""),
+        username=owner_username,
+        chat_id=chat_id,
+        user=user,
+    )
+    return True
 
 async def _send_telegram_pdf(
     client: httpx.AsyncClient,
@@ -155,6 +190,120 @@ def _temporary_error_text(lang: str) -> str:
     return texts.get(lang, texts["en"])
 
 
+def _owner_action_text(action: str) -> str:
+    if action == "accept":
+        return "Лид принят в работу."
+    if action == "reassign":
+        return "Запрошена передача лида другому ответственному."
+    if action == "close":
+        return "Лид закрыт как нецелевой."
+    return "Действие обработано."
+
+
+def _owner_event_type(action: str) -> str:
+    return {
+        "accept": "lead_owner_accepted",
+        "reassign": "lead_owner_reassign_requested",
+        "close": "lead_closed_lost_reason_selected",
+    }.get(action, "lead_owner_action")
+
+
+async def _handle_owner_callback(
+    *,
+    bot_token: str,
+    callback_query: dict,
+    action: str,
+    lead_id: str,
+    lost_reason: str | None = None,
+) -> bool:
+    callback_id = str(callback_query.get("id") or "")
+    actor_id = str((callback_query.get("from") or {}).get("id") or "")
+    resolved = await resolve_lead_session(lead_id)
+    if not resolved:
+        async with httpx.AsyncClient() as client:
+            if callback_id:
+                await client.post(
+                    f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery",
+                    json={"callback_query_id": callback_id, "text": "Лид не найден или устарел."},
+                )
+        return True
+
+    if action == "close_menu":
+        message = callback_query.get("message") or {}
+        async with httpx.AsyncClient() as client:
+            if callback_id:
+                await client.post(
+                    f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery",
+                    json={"callback_query_id": callback_id, "text": "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043f\u0440\u0438\u0447\u0438\u043d\u0443"},
+                )
+            chat_id = str((message.get("chat") or {}).get("id") or "")
+            message_id = message.get("message_id")
+            if chat_id and message_id:
+                await client.post(
+                    f"https://api.telegram.org/bot{bot_token}/editMessageReplyMarkup",
+                    json={
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "reply_markup": {"inline_keyboard": lost_reason_buttons(lead_id)},
+                    },
+                )
+        return True
+
+    channel, uid, session = resolved
+    previous_profile = session.get("lead_profile")
+    session["lead_profile"] = apply_sales_owner_action(
+        current_profile=session.get("lead_profile"),
+        action="close" if lost_reason else action,
+        actor_id=actor_id,
+        lost_reason=lost_reason,
+    )
+    append_lead_timeline_event(
+        session,
+        event_type=_owner_event_type(action),
+        payload={"owner_action": action, "owner_actor_id": actor_id, "lost_reason": lost_reason},
+        actor=actor_id,
+    )
+    await save_session_snapshot(channel, uid, session)
+    company_code = str(session.get("company_code") or "").strip()
+    if company_code:
+        payload = build_lead_event_payload(session=session, previous_profile=previous_profile)
+        payload["owner_action"] = action
+        payload["owner_actor_id"] = actor_id
+        payload["lost_reason"] = lost_reason
+        await get_license_client().create_conversation_event(
+            company_code,
+            event_type=_owner_event_type(action),
+            session_id=f"{channel}:{uid}",
+            channel_type=channel,
+            channel_user_id=uid,
+            payload_json=payload,
+            buyer_identity_id=session.get("buyer_identity_id"),
+        )
+
+    message = callback_query.get("message") or {}
+    text = _owner_action_text(action)
+    if lost_reason:
+        text = f"\u041b\u0438\u0434 \u0437\u0430\u043a\u0440\u044b\u0442. \u041f\u0440\u0438\u0447\u0438\u043d\u0430: {lost_reason}"
+    async with httpx.AsyncClient() as client:
+        if callback_id:
+            await client.post(
+                f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery",
+                json={"callback_query_id": callback_id, "text": text},
+            )
+        chat_id = str((message.get("chat") or {}).get("id") or "")
+        message_id = message.get("message_id")
+        if chat_id and message_id:
+            await client.post(
+                f"https://api.telegram.org/bot{bot_token}/editMessageReplyMarkup",
+                json={"chat_id": chat_id, "message_id": message_id, "reply_markup": {"inline_keyboard": []}},
+            )
+            await client.post(
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                json={"chat_id": chat_id, "text": text},
+            )
+    return True
+
+
 @router.post("/{bot_token}")
 async def telegram_webhook(
     request: Request,
@@ -163,13 +312,38 @@ async def telegram_webhook(
 ):
     _ = x_telegram_bot_api_secret_token
     lc = get_license_client()
+    data = await request.json()
+    callback_query = data.get("callback_query")
+    if callback_query:
+        callback_data = str(callback_query.get("data") or "")
+        owner_match = _OWNER_CALLBACK_RE.match(callback_data)
+        if owner_match:
+            return {
+                "ok": await _handle_owner_callback(
+                    bot_token=bot_token,
+                    callback_query=callback_query,
+                    action=owner_match.group(1),
+                    lead_id=owner_match.group(2),
+                )
+            }
+        close_reason_match = _OWNER_CLOSE_REASON_RE.match(callback_data)
+        if close_reason_match:
+            return {
+                "ok": await _handle_owner_callback(
+                    bot_token=bot_token,
+                    callback_query=callback_query,
+                    action="close",
+                    lost_reason=close_reason_match.group(1),
+                    lead_id=close_reason_match.group(2),
+                )
+            }
+
     resolved = await lc.resolve_telegram(bot_token)
     if not resolved.get("found"):
         logger.warning("Unknown bot_token prefix: %s...", bot_token[:8])
         raise HTTPException(status_code=404, detail="Bot not configured")
 
     tenant = resolved["tenant"]
-    data = await request.json()
     callback_query = data.get("callback_query")
     if callback_query:
         chat_id = str(((callback_query.get("message") or {}).get("chat") or {}).get("id") or callback_query.get("from", {}).get("id") or "")
@@ -197,7 +371,13 @@ async def telegram_webhook(
             if not confirm_text:
                 return {"ok": True}
             try:
-                result = await process_message_result(channel="telegram", channel_uid=chat_id, user_text=str(confirm_text), tenant=tenant)
+                result = await process_message_result(
+                    channel="telegram",
+                    channel_uid=chat_id,
+                    user_text=str(confirm_text),
+                    tenant=tenant,
+                    channel_context={"telegram_bot_token": bot_token},
+                )
                 session = await load_session("telegram", chat_id)
                 session["pending_confirmation_text"] = None
                 await save_session("telegram", chat_id, session)
@@ -276,14 +456,20 @@ async def telegram_webhook(
         return {"ok": True}
     session = await load_session("telegram", chat_id)
     greeting_lang = _language_from_telegram_message(message, tenant, session.get("lang"))
+    is_sales_owner_chat = await _remember_sales_owner_chat_if_configured(tenant, message, chat_id)
 
     if text in ("/reset", "/новый"):
         await clear_session("telegram", chat_id)
         result = {"text": get_intro_message(greeting_lang), "documents": []}
+    elif is_sales_owner_chat and text in {"/start", "/owner", "/sales_owner"}:
+        result = {
+            "text": "Sales owner Telegram chat registered for AI lead handoff.",
+            "documents": [],
+        }
     elif text == "/start":
         known_buyer = await lc.find_buyer_by_telegram(tenant["company_code"], chat_id)
         if known_buyer.get("found"):
-            result = {"text": _WELCOME_MESSAGES.get(greeting_lang, _WELCOME_MESSAGES["ru"]), "documents": []}
+            result = {"text": i18n_text("welcome.generic", greeting_lang), "documents": []}
         else:
             await clear_session("telegram", chat_id)
             result = {"text": get_intro_message(greeting_lang), "documents": []}
@@ -307,7 +493,13 @@ async def telegram_webhook(
                 "documents": [],
             }
     else:
-        result = await process_message_result(channel="telegram", channel_uid=chat_id, user_text=text, tenant=tenant)
+        result = await process_message_result(
+            channel="telegram",
+            channel_uid=chat_id,
+            user_text=text,
+            tenant=tenant,
+            channel_context={"telegram_bot_token": bot_token},
+        )
 
     async with httpx.AsyncClient() as client:
         has_sales_order_pdf = False

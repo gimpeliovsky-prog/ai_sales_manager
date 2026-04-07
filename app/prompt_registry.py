@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.sales_policy import sales_policy
+
 from app.conversation_flow import (
     BEHAVIOR_PROMPTS,
     CHANNEL_PROMPTS,
@@ -21,16 +23,19 @@ CORE_POLICY: list[str] = [
 
 LANGUAGE_POLICY: list[str] = [
     "Always reply in the language of the customer's first meaningful message in this conversation.",
-    "Supported customer languages are Hebrew, Arabic, Russian, and English.",
+    "There is no fixed supported-language list; handle any customer language when there is enough signal.",
     "Once the first customer language is established, keep using that language for the whole conversation.",
     "Do not mix languages unless the customer explicitly asks for translation.",
 ]
 
 CATALOG_POLICY: list[str] = [
     "When catalog results contain translated names, prefer the translated display name.",
+    "If the catalog marks missing_requested_item_name_translation=true, do not invent a product-name translation; use the returned display_item_name/item_name and keep the rest of the sentence in the customer's language.",
+    "Use item_code only for order tools and disambiguation; do not present it as the customer-facing product name unless no readable name is available.",
     "Use image URLs from the catalog when the customer asks for a photo.",
     "Treat stock units and sales units as separate concepts.",
     "Use only UOM values returned by the catalog or item tools.",
+    "When tool results include customer_uom_options, use those options and phrase the explanation naturally in the customer's language.",
     "If the requested UOM is unclear or unavailable, clarify before creating or updating an order.",
     "Do not expose internal field names such as stock_uom, available_uoms, non_stock_uoms, or conversion_factor.",
 ]
@@ -47,6 +52,16 @@ ORDER_POLICY: list[str] = [
 SERVICE_POLICY: list[str] = [
     "Service requests such as order PDF, status, invoice, license, or renewal should stay operational and short.",
     "Do not drag service requests back into product discovery unless the customer starts a new purchase flow.",
+]
+
+SALES_PLAYBOOK: list[str] = [
+    "Use this inbound-sales sequence: acknowledge the request, understand the need, recommend a concrete next step, confirm order details, then execute only after explicit confirmation.",
+    "For new inbound leads, create value before asking for more data: answer the specific product question when tool-backed data is available, then ask for only the missing contact or order detail needed next.",
+    "Qualify naturally without interrogating: product or service need, quantity and unit, relevant constraints, urgency, and delivery or billing needs only when needed for the next step.",
+    "When the customer is exploring, narrow choices to two or three relevant options and ask which direction fits best.",
+    "When the customer is price-sensitive, first anchor on the exact item, quantity, and unit; do not promise discounts unless a tool or tenant policy explicitly supports it.",
+    "When the customer is ready to buy, summarize the item, quantity, unit, and any known delivery details, then ask for clear confirmation.",
+    "Always end with one concrete next step or one focused question unless the task is already complete.",
 ]
 
 
@@ -114,10 +129,63 @@ def _buyer_context_lines(
     return lines
 
 
+def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
+    if not isinstance(lead_profile, dict):
+        return []
+    lines: list[str] = []
+    for key, label in [
+        ("status", "Lead status"),
+        ("lead_id", "Lead id"),
+        ("source_channel", "Lead source channel"),
+        ("source_campaign", "Lead source campaign"),
+        ("source_utm_source", "UTM source"),
+        ("source_utm_campaign", "UTM campaign"),
+        ("score", "Lead score"),
+        ("temperature", "Lead temperature"),
+        ("next_action", "Recommended next action"),
+        ("created_at", "Lead created at"),
+        ("qualified_at", "Lead qualified at"),
+        ("hot_at", "Lead became hot at"),
+        ("product_interest", "Product interest"),
+        ("quantity", "Quantity"),
+        ("uom", "Unit"),
+        ("urgency", "Urgency"),
+        ("delivery_need", "Delivery need"),
+        ("decision_status", "Decision status"),
+        ("duplicate_of_lead_id", "Duplicate of lead id"),
+        ("dedupe_reason", "Duplicate detection reason"),
+        ("merged_into_lead_id", "Merged into lead id"),
+        ("order_correction_status", "Order correction status"),
+        ("target_order_id", "Target order id for correction"),
+        ("correction_type", "Order correction type"),
+        ("quote_status", "Quote status"),
+        ("quote_id", "Quote id"),
+        ("quote_total", "Quote total"),
+        ("quote_currency", "Quote currency"),
+        ("expected_revenue", "Expected revenue"),
+        ("order_total", "Order total"),
+        ("currency", "Currency"),
+        ("won_revenue", "Won revenue"),
+        ("followup_count", "Follow-up count"),
+        ("lost_reason", "Lost reason"),
+        ("sales_owner_status", "Sales owner status"),
+        ("playbook_version", "Playbook version"),
+    ]:
+        value = lead_profile.get(key)
+        if value not in (None, "", []):
+            lines.append(f"{label}: {value}")
+    if lead_profile.get("price_sensitivity"):
+        lines.append("Customer appears price-sensitive.")
+    if lead_profile.get("do_not_contact"):
+        lines.append("Customer must not receive proactive follow-up.")
+    return lines
+
+
 def _tenant_context_lines(tenant: dict[str, Any], lang: str) -> list[str]:
-    lines = [
-        f"Customer reply language for this turn: {lang}.",
-    ]
+    if lang == "auto":
+        lines = ["Customer reply language for this turn: auto-detect from the customer's message and reply in that same language."]
+    else:
+        lines = [f"Customer reply language for this turn: {lang}."]
     if tenant.get("company_name"):
         lines.append(f"Company name: {tenant['company_name']}")
     if tenant.get("company_code"):
@@ -127,9 +195,22 @@ def _tenant_context_lines(tenant: dict[str, Any], lang: str) -> list[str]:
 
 def _tenant_policy_lines(tenant: dict[str, Any]) -> list[str]:
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
+    resolved_sales_policy = sales_policy(ai_policy)
     lines: list[str] = []
-    if not bool(ai_policy.get("allow_discount_promises", False)):
+    if not bool(resolved_sales_policy.get("allow_discount_promises", False)):
         lines.append("Do not promise discounts or special commercial terms unless they come from a tool result.")
+    if not bool(resolved_sales_policy.get("allow_stock_promises_without_tool", False)):
+        lines.append("Do not promise stock or availability without a tool result.")
+    if not bool(resolved_sales_policy.get("allow_delivery_promises_without_tool", False)):
+        lines.append("Do not promise delivery timing without a tool result or explicit tenant policy.")
+    if resolved_sales_policy.get("minimum_order_total") not in (None, ""):
+        lines.append(f"Minimum order total policy: {resolved_sales_policy.get('minimum_order_total')}.")
+    try:
+        default_delivery_days = int(resolved_sales_policy.get("default_delivery_days") or 0)
+    except (TypeError, ValueError):
+        default_delivery_days = 0
+    if default_delivery_days > 0:
+        lines.append(f"Default earliest delivery offset: {resolved_sales_policy.get('default_delivery_days')} day(s).")
     if not bool(ai_policy.get("allow_free_text_catalog_answers", True)):
         lines.append("For catalog questions, rely on tool-backed product data instead of free-text assumptions.")
     if not bool(ai_policy.get("allow_invoice", True)):
@@ -154,6 +235,7 @@ def build_runtime_system_prompt(
     last_sales_order_name: str | None = None,
     recent_sales_orders: list[dict[str, Any]] | None = None,
     recent_sales_invoices: list[dict[str, Any]] | None = None,
+    lead_profile: dict[str, Any] | None = None,
     handoff_required: bool = False,
     handoff_reason: str | None = None,
 ) -> str:
@@ -168,6 +250,7 @@ def build_runtime_system_prompt(
     catalog_policy = _append_override_lines(CATALOG_POLICY, prompt_overrides.get("catalog_policy"))
     order_policy = _append_override_lines(ORDER_POLICY, prompt_overrides.get("order_policy"))
     service_policy = _append_override_lines(SERVICE_POLICY, prompt_overrides.get("service_policy"))
+    sales_playbook = _append_override_lines(SALES_PLAYBOOK, prompt_overrides.get("sales_playbook"))
     stage_prompts = _merge_prompt_map(STAGE_PROMPTS, prompt_overrides.get("stage_prompts"))
     behavior_prompts = _merge_prompt_map(BEHAVIOR_PROMPTS, prompt_overrides.get("behavior_prompts"))
     channel_prompts = _merge_prompt_map(CHANNEL_PROMPTS, prompt_overrides.get("channel_prompts"))
@@ -189,6 +272,8 @@ def build_runtime_system_prompt(
     lines.append("")
     lines.extend(_section("Service policy", service_policy))
     lines.append("")
+    lines.extend(_section("Inbound sales playbook", sales_playbook))
+    lines.append("")
     lines.extend(_section("Tenant context", _tenant_context_lines(tenant, lang)))
     tenant_policy = _tenant_policy_lines(tenant)
     if tenant_policy:
@@ -204,6 +289,10 @@ def build_runtime_system_prompt(
     if buyer_context:
         lines.append("")
         lines.extend(_section("Buyer context", buyer_context))
+    lead_profile_context = _lead_profile_lines(lead_profile)
+    if lead_profile_context:
+        lines.append("")
+        lines.extend(_section("Lead profile", lead_profile_context))
     lines.append("")
     lines.extend(
         _section(

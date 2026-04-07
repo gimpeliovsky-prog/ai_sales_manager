@@ -142,5 +142,53 @@
       "behavior_class": "price_sensitive",
       "last_intent": "add_to_order"
     }
+  },
+  {
+    "name": "unknown_buyer_with_commercial_intent_enters_lead_capture",
+    "session": {
+      "stage": "new"
+    },
+    "user_text": "show me coffee machines",
+    "channel": "webchat",
+    "needs_intro": true,
+    "customer_identified": false,
+    "active_order_name": null,
+    "ai_policy": {
+      "handoff_rules": {
+        "enabled": true,
+        "allow_customer_requested_handoff": true,
+        "frustrated_customer_handoff": true,
+        "clarification_failure_limit": 2
+      }
+    },
+    "expected": {
+      "stage": "lead_capture",
+      "handoff_required": false,
+      "last_intent": "browse_catalog"
+    }
+  },
+  {
+    "name": "unknown_buyer_low_signal_still_requires_identification",
+    "session": {
+      "stage": "new"
+    },
+    "user_text": "?",
+    "channel": "webchat",
+    "needs_intro": true,
+    "customer_identified": false,
+    "active_order_name": null,
+    "ai_policy": {
+      "handoff_rules": {
+        "enabled": true,
+        "allow_customer_requested_handoff": true,
+        "frustrated_customer_handoff": true,
+        "clarification_failure_limit": 2
+      }
+    },
+    "expected": {
+      "stage": "identify",
+      "handoff_required": false,
+      "last_intent": "low_signal"
+    }
   }
 ]

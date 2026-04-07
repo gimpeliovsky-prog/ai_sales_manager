@@ -4,6 +4,10 @@ import re
 
 _CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
+_EN_HINT_RE = re.compile(
+    r"\b(?:hello|hi|hey|please|price|cost|quote|order|delivery|ship|need|want|buy|thanks|thank you)\b",
+    re.IGNORECASE,
+)
 _HEBREW_RE = re.compile(r"[\u0590-\u05FF]")
 _ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]")
 
@@ -25,7 +29,7 @@ def detect_language(user_text: str, default_lang: str | None = "ru") -> str | No
     if _CYRILLIC_RE.search(user_text):
         return "ru"
     if _LATIN_RE.search(user_text):
-        return "en"
+        return "en" if _EN_HINT_RE.search(user_text) else "auto"
     return default_lang
 
 

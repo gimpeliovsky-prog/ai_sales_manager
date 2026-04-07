@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.i18n import text as i18n_text
+
 DEFAULT_STAGE = "discover"
 DEFAULT_BEHAVIOR_CLASS = "unclear_request"
 _SUPPORTED_REGEX_FLAGS = {
@@ -19,6 +21,11 @@ STAGE_PROMPTS: dict[str, list[str]] = {
     "identify": [
         "Your goal is to identify the customer before continuing the sales flow.",
         "Ask only for the minimum missing contact details and do not move to order creation yet.",
+    ],
+    "lead_capture": [
+        "The buyer is not identified yet, but the message has commercial intent.",
+        "Give useful low-risk product guidance when tool-backed data is available, then ask for the minimum contact details needed to continue.",
+        "Do not create orders, invoices, licenses, or delivery commitments until the buyer is identified.",
     ],
     "discover": [
         "Your goal is to understand which product or service the customer wants.",
@@ -294,6 +301,8 @@ def classify_stage(
     if intent == "human_handoff":
         return "handoff", 0.98
     if needs_intro or not customer_identified:
+        if intent not in {"low_signal", "service_request"}:
+            return "lead_capture", 0.86
         return "identify", 0.97
     if intent == "service_request":
         return "service", 0.95
@@ -332,6 +341,9 @@ def derive_conversation_state(
 
     behavior_class, behavior_confidence = classify_behavior(user_text, session, ai_policy=ai_policy)
     intent, intent_confidence = classify_intent(user_text, ai_policy=ai_policy)
+    if behavior_class == "silent_or_low_signal" and intent == "find_product":
+        intent = "low_signal"
+        intent_confidence = max(intent_confidence, behavior_confidence)
     stage, stage_confidence = classify_stage(
         session=session,
         intent=intent,
@@ -442,13 +454,7 @@ def get_handoff_message(lang: str, reason: str | None = None, ai_policy: dict[st
                 handoff_messages[normalized_key] = normalized_value
     message = handoff_messages.get(lang, handoff_messages["en"])
     if reason == "customer_requested_human":
-        if lang == "ru":
-            return "Хорошо, подключаю менеджера. Дальше с вами продолжит человек."
-        if lang == "he":
-            return "בסדר, אני מעביר למנהל. נציג אנושי ימשיך איתך מכאן."
-        if lang == "ar":
-            return "حسنًا، سأحوّل المحادثة إلى مدير. سيتابع معك شخص من الفريق."
-        return "Okay, I'm connecting a manager. A human will continue with you from here."
+        return i18n_text("handoff.customer_requested_human", lang, ai_policy=ai_policy)
     return message
 
 

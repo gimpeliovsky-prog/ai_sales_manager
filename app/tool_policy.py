@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.interaction_patterns import has_explicit_confirmation
+from app.sales_policy import minimum_order_violation, sales_policy
 
 
 def _deny(tool_name: str, reason: str, next_action: str) -> dict[str, Any]:
@@ -23,6 +24,7 @@ def evaluate_tool_call(
     user_text: str,
 ) -> dict[str, Any] | None:
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
+    resolved_sales_policy = sales_policy(ai_policy)
     if session.get("handoff_required"):
         return _deny(
             tool_name,
@@ -48,6 +50,15 @@ def evaluate_tool_call(
     if tool_name == "get_product_catalog":
         return None
 
+    if tool_name == "get_sales_order_status":
+        if not (requested_order_name or active_order_name):
+            return _deny(
+                tool_name,
+                "There is no active sales order to check.",
+                "Ask which order should be checked.",
+            )
+        return None
+
     if tool_name == "get_buyer_sales_history":
         if not has_customer:
             return _deny(
@@ -67,7 +78,7 @@ def evaluate_tool_call(
         return None
 
     if tool_name == "create_sales_order":
-        if not has_customer:
+        if not has_customer and not resolved_sales_policy.get("allow_order_without_registered_customer"):
             return _deny(
                 tool_name,
                 "Cannot create a sales order before the buyer is identified.",
@@ -84,6 +95,13 @@ def evaluate_tool_call(
                 tool_name,
                 "Sales order creation requires at least one item.",
                 "Ask which item and quantity the customer wants.",
+            )
+        minimum_violation = minimum_order_violation(inputs.get("items"), ai_policy)
+        if minimum_violation:
+            return _deny(
+                tool_name,
+                "Sales order is below this tenant's minimum order total.",
+                "Explain the minimum order total and ask whether to adjust the order.",
             )
         if not has_explicit_confirmation(user_text):
             return _deny(

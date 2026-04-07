@@ -5,6 +5,7 @@ from fastapi import APIRouter, Request, Response
 from twilio.twiml.messaging_response import MessagingResponse
 
 from app.agent import process_message
+from app.i18n import text as i18n_text
 from app.license_client import get_license_client
 from app.session_store import clear_session
 
@@ -33,9 +34,15 @@ async def whatsapp_webhook(request: Request):
     tenant = resolved["tenant"]
     if text.lower() in ("/start", "/reset"):
         await clear_session("whatsapp", from_number)
-        reply = "Здравствуйте! Чем могу помочь?"
+        reply = i18n_text("welcome.generic", tenant.get("ai_language", "auto"))
     else:
-        reply = await process_message(channel="whatsapp", channel_uid=from_number, user_text=text, tenant=tenant)
+        reply = await process_message(
+            channel="whatsapp",
+            channel_uid=from_number,
+            user_text=text,
+            tenant=tenant,
+            channel_context={"whatsapp_to_number": to_number, "whatsapp_from_number": from_number},
+        )
 
     twiml = MessagingResponse()
     twiml.message(reply)

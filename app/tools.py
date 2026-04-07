@@ -1,21 +1,23 @@
 import json
-from datetime import date
 import re
 from typing import Any
 
+from app.catalog_localization import catalog_lang as _catalog_lang, localize_catalog_result as _localize_catalog_result
+from app.i18n import text as i18n_text
 from app.interaction_patterns import has_add_to_order_intent, has_explicit_confirmation
 from app.license_client import LicenseClient
+from app.sales_policy import earliest_delivery_date, minimum_order_violation, normalize_order_state
 
 TOOLS: list[dict] = [
     {
         "type": "function",
         "name": "get_product_catalog",
-        "description": "Получить каталог товаров и услуг по группе или по названию товара вместе с базовой единицей stock_uom и доступными коммерческими UOM, например коробками.",
+        "description": "Search the product and service catalog by item group or item name. Use this to get item codes, display names, stock UOM, available sales UOM options, conversion factors, images, and product metadata before recommending or ordering an item.",
         "parameters": {
             "type": "object",
             "properties": {
-                "item_group": {"type": "string"},
-                "item_name": {"type": "string"},
+                "item_group": {"type": "string", "description": "Optional product group/category to search."},
+                "item_name": {"type": "string", "description": "Optional item name or search text from the customer request."},
             },
             "additionalProperties": False,
         },
@@ -23,21 +25,22 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "name": "create_sales_order",
-        "description": "Оформить заказ после подтверждения состава. Если клиент просит коробки или другую не stock UOM, передай нужную UOM и conversion_factor из каталога. Если дата доставки не указана, используй ближайшую возможную дату автоматически.",
+        "description": "Create a sales order only after the customer clearly confirms the order contents. If the customer asks for boxes, packs, or another non-stock UOM, pass the requested UOM and the matching conversion_factor from the catalog result. If delivery_date is missing, use the earliest reasonable date.",
         "parameters": {
             "type": "object",
             "properties": {
-                "delivery_date": {"type": "string"},
+                "delivery_date": {"type": "string", "description": "Optional delivery date in YYYY-MM-DD format."},
                 "items": {
                     "type": "array",
+                    "description": "Order lines confirmed by the customer.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "item_code": {"type": "string"},
-                            "qty": {"type": "number"},
-                            "rate": {"type": "number"},
-                            "uom": {"type": "string"},
-                            "conversion_factor": {"type": "number"},
+                            "item_code": {"type": "string", "description": "ERP item code from the catalog."},
+                            "qty": {"type": "number", "description": "Customer-confirmed quantity."},
+                            "rate": {"type": "number", "description": "Optional item rate only when tool-backed or explicitly provided."},
+                            "uom": {"type": "string", "description": "Requested UOM from the catalog result."},
+                            "conversion_factor": {"type": "number", "description": "Conversion factor for non-stock UOM from the catalog result."},
                         },
                         "required": ["item_code", "qty"],
                         "additionalProperties": False,
@@ -51,10 +54,10 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "name": "create_invoice",
-        "description": "Выставить счет по номеру заказа.",
+        "description": "Create an invoice for an existing sales order when invoice creation is allowed and the customer asks for it.",
         "parameters": {
             "type": "object",
-            "properties": {"sales_order_name": {"type": "string"}},
+            "properties": {"sales_order_name": {"type": "string", "description": "Existing sales order name."}},
             "required": ["sales_order_name"],
             "additionalProperties": False,
         },
@@ -62,21 +65,22 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "name": "update_sales_order",
-        "description": "Добавить товар в уже созданный draft Sales Order. Если номер заказа не указан, используй текущий активный заказ из переписки.",
+        "description": "Add or update items in an existing draft sales order. If sales_order_name is missing, use the active order from the current conversation. Do not use this unless the customer explicitly asks to add/update the current order or clearly confirms the change.",
         "parameters": {
             "type": "object",
             "properties": {
-                "sales_order_name": {"type": "string"},
+                "sales_order_name": {"type": "string", "description": "Optional existing sales order name. Defaults to the active order in the conversation."},
                 "items": {
                     "type": "array",
+                    "description": "Items to add or update in the order.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "item_code": {"type": "string"},
-                            "qty": {"type": "number"},
-                            "rate": {"type": "number"},
-                            "uom": {"type": "string"},
-                            "conversion_factor": {"type": "number"},
+                            "item_code": {"type": "string", "description": "ERP item code from the catalog."},
+                            "qty": {"type": "number", "description": "Customer-confirmed quantity to add/update."},
+                            "rate": {"type": "number", "description": "Optional item rate only when tool-backed or explicitly provided."},
+                            "uom": {"type": "string", "description": "Requested UOM from the catalog result."},
+                            "conversion_factor": {"type": "number", "description": "Conversion factor for non-stock UOM from the catalog result."},
                         },
                         "required": ["item_code", "qty"],
                         "additionalProperties": False,
@@ -89,12 +93,24 @@ TOOLS: list[dict] = [
     },
     {
         "type": "function",
-        "name": "send_sales_order_pdf",
-        "description": "Повторно отправить клиенту PDF текущего заказа. Используй это, когда клиент просит отправить заказ, order PDF, order file или current order. Не используй для создания счета.",
+        "name": "get_sales_order_status",
+        "description": "Get the current status of an existing sales order before promising or applying an order change. Use this when the customer asks to change, cancel, add to, remove from, invoice, or check an existing order.",
         "parameters": {
             "type": "object",
             "properties": {
-                "sales_order_name": {"type": "string"},
+                "sales_order_name": {"type": "string", "description": "Optional sales order name. Defaults to the active order in the conversation."},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "send_sales_order_pdf",
+        "description": "Send or re-send the PDF for the current sales order when the customer asks for the order PDF, order file, current order, or sales order document. Do not use this to create an invoice.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "sales_order_name": {"type": "string", "description": "Optional sales order name. Defaults to the active order in the conversation."},
             },
             "additionalProperties": False,
         },
@@ -102,10 +118,13 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "name": "register_buyer",
-        "description": "Зарегистрировать нового покупателя после получения имени и телефона.",
+        "description": "Register or resolve a new buyer after receiving at least the buyer's full name. Include phone when the customer provided it.",
         "parameters": {
             "type": "object",
-            "properties": {"full_name": {"type": "string"}, "phone": {"type": "string"}},
+            "properties": {
+                "full_name": {"type": "string", "description": "Buyer full name."},
+                "phone": {"type": "string", "description": "Optional buyer phone number."},
+            },
             "required": ["full_name"],
             "additionalProperties": False,
         },
@@ -113,30 +132,30 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "name": "get_buyer_sales_history",
-        "description": "Получить недавнюю историю заказов и счетов покупателя, чтобы использовать ее как контекст для повторного клиента.",
+        "description": "Get recent sales orders and invoices for an identified buyer. Use this to support returning-customer flows and repeat purchase context without inventing history.",
         "parameters": {
             "type": "object",
-            "properties": {"erp_customer_id": {"type": "string"}},
+            "properties": {"erp_customer_id": {"type": "string", "description": "Optional ERP customer id. Defaults to the identified customer in the conversation."}},
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
         "name": "create_license",
-        "description": "Создать лицензионный ключ.",
+        "description": "Create a license key when this tenant and conversation flow allow license operations.",
         "parameters": {
             "type": "object",
-            "properties": {"description": {"type": "string"}},
+            "properties": {"description": {"type": "string", "description": "Optional license description."}},
             "additionalProperties": False,
         },
     },
     {
         "type": "function",
         "name": "extend_subscription",
-        "description": "Продлить подписку.",
+        "description": "Extend a subscription by a specified number of days when this tenant and conversation flow allow subscription operations.",
         "parameters": {
             "type": "object",
-            "properties": {"add_days": {"type": "integer"}},
+            "properties": {"add_days": {"type": "integer", "description": "Number of days to add to the subscription."}},
             "required": ["add_days"],
             "additionalProperties": False,
         },
@@ -179,108 +198,6 @@ def _build_search_candidates(*texts: str | None) -> list[str]:
     return candidates[:6]
 
 
-def _translate_uom_label(label: str | None, lang: str) -> str | None:
-    if not label:
-        return label
-    normalized = str(label).strip().lower()
-    translations = {
-        "ru": {
-            "штуки": "штуки",
-            "коробки": "коробки",
-            "упаковки": "упаковки",
-            "килограммы": "килограммы",
-            "граммы": "граммы",
-            "литры": "литры",
-            "метры": "метры",
-        },
-        "en": {
-            "штуки": "pieces",
-            "коробки": "boxes",
-            "упаковки": "packs",
-            "килограммы": "kilograms",
-            "граммы": "grams",
-            "литры": "liters",
-            "метры": "meters",
-        },
-        "he": {
-            "штуки": "יחידות",
-            "коробки": "קרטון",
-            "упаковки": "חבילות",
-            "килограммы": "קילוגרמים",
-            "граммы": "גרמים",
-            "литры": "ליטרים",
-            "метры": "מטרים",
-        },
-        "ar": {
-            "штуки": "قطع",
-            "коробки": "صناديق",
-            "упаковки": "عبوات",
-            "килограммы": "كيلوغرامات",
-            "граммы": "غرامات",
-            "литры": "لترات",
-            "метры": "أمتار",
-        },
-    }
-    return translations.get(lang, translations["en"]).get(normalized, label)
-
-
-def _localize_catalog_result(result: dict[str, Any], lang: str) -> dict[str, Any]:
-    if not isinstance(result, dict):
-        return result
-    items = result.get("items")
-    if not isinstance(items, list):
-        return result
-
-    if lang == "ru":
-        sold_in_prefix = "Товар продается в единицах: "
-    elif lang == "he":
-        sold_in_prefix = "המוצר נמכר ביחידות: "
-    elif lang == "ar":
-        sold_in_prefix = "يباع المنتج بوحدات: "
-    else:
-        sold_in_prefix = "This product is sold in: "
-
-    localized_items: list[dict[str, Any]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            localized_items.append(item)
-            continue
-        localized = dict(item)
-        if localized.get("display_item_name"):
-            localized["item_name"] = localized.get("display_item_name")
-        if localized.get("stock_uom_label"):
-            localized["stock_uom_label"] = _translate_uom_label(localized.get("stock_uom_label"), lang)
-        if localized.get("sales_uom_label"):
-            localized["sales_uom_label"] = _translate_uom_label(localized.get("sales_uom_label"), lang)
-        available_uoms = localized.get("available_uoms")
-        if isinstance(available_uoms, list):
-            updated_uoms: list[dict[str, Any]] = []
-            for uom in available_uoms:
-                if not isinstance(uom, dict):
-                    updated_uoms.append(uom)
-                    continue
-                updated = dict(uom)
-                updated["display_name"] = _translate_uom_label(updated.get("display_name") or updated.get("uom"), lang)
-                updated_uoms.append(updated)
-            localized["available_uoms"] = updated_uoms
-            localized["non_stock_uoms"] = [uom for uom in updated_uoms if isinstance(uom, dict) and not uom.get("is_stock_uom")]
-        labels = []
-        if localized.get("stock_uom_label"):
-            labels.append(str(localized["stock_uom_label"]))
-        for uom in localized.get("non_stock_uoms", []):
-            if isinstance(uom, dict):
-                label = str(uom.get("display_name") or uom.get("uom") or "").strip()
-                if label and label not in labels:
-                    labels.append(label)
-        if labels:
-            localized["customer_uom_summary"] = sold_in_prefix + ", ".join(labels) + "."
-        localized_items.append(localized)
-
-    localized_result = dict(result)
-    localized_result["items"] = localized_items
-    return localized_result
-
-
 async def execute_tool(
     name: str,
     inputs: dict[str, Any],
@@ -292,6 +209,7 @@ async def execute_tool(
     channel: str,
     channel_uid: str,
     lc: LicenseClient,
+    ai_policy: dict[str, Any] | None = None,
 ) -> str:
     try:
         result = await _dispatch(
@@ -305,55 +223,80 @@ async def execute_tool(
             channel,
             channel_uid,
             lc,
+            ai_policy,
         )
         return json.dumps(result, ensure_ascii=False, default=str)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
 
-async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order_name, current_lang, user_text, channel, channel_uid, lc):
+async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order_name, current_lang, user_text, channel, channel_uid, lc, ai_policy=None):
     from app.buyer_resolver import create_buyer_from_intro
 
     if name == "get_product_catalog":
         item_group = inp.get("item_group")
         item_name = inp.get("item_name")
+        catalog_lang = _catalog_lang(current_lang)
         try:
-            result = await lc.get_items(company_code, item_group, item_name, current_lang)
+            result = await lc.get_items(company_code, item_group, item_name, catalog_lang)
         except Exception:
             result = {"items": []}
         if not result.get("items"):
             for candidate in _build_search_candidates(item_name, item_group):
                 try:
-                    result = await lc.get_items(company_code, None, candidate, current_lang)
+                    result = await lc.get_items(company_code, None, candidate, catalog_lang)
                 except Exception:
                     result = {"items": []}
                 if result.get("items"):
                     break
-        return _localize_catalog_result(result, current_lang)
+        if not result.get("items") and catalog_lang:
+            for candidate in [item_name, item_group, *_build_search_candidates(item_name, item_group)]:
+                if not candidate:
+                    continue
+                try:
+                    result = await lc.get_items(company_code, None, candidate, None)
+                except Exception:
+                    result = {"items": []}
+                if result.get("items"):
+                    break
+        return _localize_catalog_result(result, current_lang, ai_policy)
     if name == "create_sales_order":
         if not erp_customer_id:
-            return {"error": "Покупатель не определён. Сначала зарегистрируйте покупателя."}
+            return {"error": i18n_text("tool_error.buyer_not_identified", current_lang, ai_policy=ai_policy), "error_code": "buyer_not_identified"}
         if not _items_have_qty(inp.get("items")):
-            return {"error": "Для создания заказа нужно указать количество товара."}
+            return {"error": i18n_text("tool_error.order_qty_required", current_lang, ai_policy=ai_policy), "error_code": "order_qty_required"}
+        minimum_violation = minimum_order_violation(inp.get("items"), ai_policy)
+        if minimum_violation:
+            return {"error": "Order total is below the tenant minimum order total.", "error_code": "minimum_order_total_not_met", **minimum_violation}
         if not _has_explicit_confirmation(user_text):
-            return {"error": "Заказ можно создать только после явного подтверждения клиента."}
-        delivery_date = inp.get("delivery_date") or date.today().isoformat()
+            return {"error": i18n_text("tool_error.order_confirmation_required", current_lang, ai_policy=ai_policy), "error_code": "order_confirmation_required"}
+        delivery_date = inp.get("delivery_date") or earliest_delivery_date(ai_policy)
         return await lc.create_sales_order(company_code, erp_customer_id, delivery_date, inp["items"])
     if name == "create_invoice":
         return await lc.create_invoice(company_code, inp["sales_order_name"])
     if name == "update_sales_order":
         sales_order_name = inp.get("sales_order_name") or active_sales_order_name
         if not sales_order_name:
-            return {"error": "Нет активного заказа. Сначала создайте заказ."}
+            return {"error": i18n_text("tool_error.no_active_order", current_lang, ai_policy=ai_policy), "error_code": "no_active_order"}
         if not _items_have_qty(inp.get("items")):
-            return {"error": "Чтобы добавить товар в заказ, нужно указать количество."}
+            return {"error": i18n_text("tool_error.add_to_order_qty_required", current_lang, ai_policy=ai_policy), "error_code": "add_to_order_qty_required"}
         if not _has_add_to_order_intent(user_text) and not _has_explicit_confirmation(user_text):
-            return {"error": "Чтобы добавить товар в заказ, клиент должен явно попросить добавить позицию в текущий заказ."}
+            return {"error": i18n_text("tool_error.add_to_order_confirmation_required", current_lang, ai_policy=ai_policy), "error_code": "add_to_order_confirmation_required"}
+        order = await lc.get_sales_order(company_code, sales_order_name)
+        state = normalize_order_state(order if isinstance(order, dict) else {})
+        if not state.get("can_modify"):
+            return {"error": "Sales order cannot be modified in its current state.", "error_code": "sales_order_not_modifiable", **state}
         return await lc.update_sales_order_items(company_code, sales_order_name, inp["items"])
+    if name == "get_sales_order_status":
+        sales_order_name = inp.get("sales_order_name") or active_sales_order_name
+        if not sales_order_name:
+            return {"error": i18n_text("tool_error.no_active_order", current_lang, ai_policy=ai_policy), "error_code": "no_active_order"}
+        order = await lc.get_sales_order(company_code, sales_order_name)
+        return normalize_order_state(order if isinstance(order, dict) else {})
     if name == "send_sales_order_pdf":
         sales_order_name = inp.get("sales_order_name") or active_sales_order_name
         if not sales_order_name:
-            return {"error": "Нет активного заказа. Сначала создайте заказ."}
+            return {"error": i18n_text("tool_error.no_active_order", current_lang, ai_policy=ai_policy), "error_code": "no_active_order"}
         return await lc.get_sales_order(company_code, sales_order_name)
     if name == "register_buyer":
         buyer_result = await create_buyer_from_intro(
