@@ -152,6 +152,9 @@ class LicenseClient:
     async def get_sales_order(self, company_code: str, sales_order_name: str) -> dict:
         return await self._get(f"/tenants/{company_code}/sales-orders/{sales_order_name}")
 
+    async def get_sales_order_status(self, company_code: str, sales_order_name: str) -> dict:
+        return await self._get(f"/tenants/{company_code}/sales-orders/{sales_order_name}/status")
+
     async def update_sales_order_items(self, company_code: str, sales_order_name: str, items: list) -> dict:
         return await self._post(
             f"/tenants/{company_code}/sales-orders/{sales_order_name}/items",

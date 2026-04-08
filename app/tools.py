@@ -437,7 +437,7 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
         )
         if normalized_items_result.get("error"):
             return normalized_items_result
-        order = await lc.get_sales_order(company_code, sales_order_name)
+        order = await lc.get_sales_order_status(company_code, sales_order_name)
         state = normalize_order_state(order if isinstance(order, dict) else {})
         if not state.get("can_modify"):
             return {"error": "Sales order cannot be modified in its current state.", "error_code": "sales_order_not_modifiable", **state}
@@ -446,7 +446,7 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
         sales_order_name = inp.get("sales_order_name") or active_sales_order_name
         if not sales_order_name:
             return {"error": i18n_text("tool_error.no_active_order", current_lang, ai_policy=ai_policy), "error_code": "no_active_order"}
-        order = await lc.get_sales_order(company_code, sales_order_name)
+        order = await lc.get_sales_order_status(company_code, sales_order_name)
         return normalize_order_state(order if isinstance(order, dict) else {})
     if name == "send_sales_order_pdf":
         sales_order_name = inp.get("sales_order_name") or active_sales_order_name
