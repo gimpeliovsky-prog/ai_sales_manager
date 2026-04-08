@@ -40,6 +40,8 @@ from app.tools import TOOLS, execute_tool
 logger = logging.getLogger(__name__)
 
 _PHONE_RE = re.compile(r"(\+?\d[\d\s\-\(\)]{7,}\d)")
+_MAX_OPENAI_INPUT_ITEMS = 48
+_MAX_OPENAI_INPUT_BYTES = 180_000
 
 def _empty_result() -> dict[str, Any]:
     return {"text": "...", "documents": []}
