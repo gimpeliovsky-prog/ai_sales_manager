@@ -849,6 +849,26 @@ def run_lead_management_evals() -> list[str]:
             "catalog_single_match_resolves_specific_item",
         )
     )
+    unrelated_catalog_lookup_profile = update_lead_profile_from_tool(
+        current_profile={"status": "qualified", "product_interest": "backpack", "need": "backpack"},
+        tool_name="get_product_catalog",
+        inputs={"item_name": "my name is Peter"},
+        tool_result={"items": []},
+        stage="discover",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            unrelated_catalog_lookup_profile,
+            {
+                "product_interest": "backpack",
+                "catalog_lookup_query": "peter",
+                "catalog_lookup_status": "no_match",
+            },
+            "catalog_lookup_does_not_replace_existing_interest_with_unrelated_query",
+        )
+    )
     contact_only_profile = update_lead_profile_from_message(
         current_profile={"status": "none", "score": 0},
         user_text="my name is Peter tel 0557704571",

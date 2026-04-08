@@ -1270,13 +1270,18 @@ def update_lead_profile_from_tool(
     resolved_now = datetime.now(UTC)
 
     if tool_name == "get_product_catalog":
-        interest = _clean_text(inputs.get("item_name") or inputs.get("item_group"))
+        interest = normalize_catalog_lookup_query(inputs.get("item_name") or inputs.get("item_group"))
         items = tool_result.get("items") if isinstance(tool_result, dict) else None
         profile["catalog_lookup_query"] = interest
         profile["catalog_lookup_at"] = resolved_now.isoformat()
         if not interest and isinstance(items, list) and items and isinstance(items[0], dict):
             interest = _clean_text(items[0].get("item_name") or items[0].get("display_item_name"))
-        if interest:
+        current_interest = _clean_text(profile.get("product_interest"))
+        if interest and (
+            not current_interest
+            or _same_interest(interest, current_interest)
+            or _refines_interest(interest, current_interest)
+        ):
             profile["product_interest"] = interest
             profile["need"] = profile.get("need") or interest
         if isinstance(items, list):
