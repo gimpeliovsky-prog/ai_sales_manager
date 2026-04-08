@@ -296,5 +296,64 @@
       "handoff_required": false,
       "failed_clarification_count": 0
     }
+  },
+  {
+    "name": "russian_add_to_order_uses_lexicon_stage",
+    "session": {
+      "stage": "invoice",
+      "erp_customer_id": "CUST-0001"
+    },
+    "user_text": "добавь в заказ футболку",
+    "channel": "telegram",
+    "needs_intro": false,
+    "customer_identified": true,
+    "active_order_name": "SO-123",
+    "expected": {
+      "stage": "order_build",
+      "last_intent": "add_to_order",
+      "handoff_required": false
+    }
+  },
+  {
+    "name": "arabic_service_request_uses_lexicon_behavior",
+    "session": {
+      "stage": "discover",
+      "erp_customer_id": "CUST-0001"
+    },
+    "user_text": "أرسل الفاتورة من فضلك",
+    "channel": "telegram",
+    "needs_intro": false,
+    "customer_identified": true,
+    "active_order_name": "SO-123",
+    "expected": {
+      "stage": "service",
+      "behavior_class": "service_request",
+      "last_intent": "service_request"
+    }
+  },
+  {
+    "name": "hebrew_human_handoff_uses_lexicon_intent",
+    "session": {
+      "stage": "discover",
+      "erp_customer_id": "CUST-0001"
+    },
+    "user_text": "אני צריך מנהל",
+    "channel": "telegram",
+    "needs_intro": false,
+    "customer_identified": true,
+    "active_order_name": null,
+    "ai_policy": {
+      "handoff_rules": {
+        "enabled": true,
+        "allow_customer_requested_handoff": true,
+        "frustrated_customer_handoff": true,
+        "clarification_failure_limit": 2
+      }
+    },
+    "expected": {
+      "stage": "handoff",
+      "handoff_required": true,
+      "handoff_reason": "customer_requested_human"
+    }
   }
 ]

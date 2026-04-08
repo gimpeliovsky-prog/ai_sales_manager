@@ -17,6 +17,7 @@ from app.catalog_localization import catalog_lang, localize_catalog_result  # no
 from app.i18n import text as i18n_text  # noqa: E402
 from app.interaction_patterns import has_explicit_confirmation  # noqa: E402
 from app.language_policy import resolve_conversation_language  # noqa: E402
+from app.lexicon_schema import validate_all_lexicons  # noqa: E402
 from app.lead_management import (  # noqa: E402
     apply_llm_lead_patch,
     build_handoff_summary,
@@ -169,6 +170,10 @@ def run_tool_schema_evals() -> list[str]:
         if cyrillic_re.search(description):
             failures.append(f"tool_schema_description_english:{tool.get('name')}: got Cyrillic in {description!r}")
     return failures
+
+
+def run_lexicon_schema_evals() -> list[str]:
+    return list(validate_all_lexicons())
 
 
 def run_prompt_override_evals() -> list[str]:
@@ -1829,6 +1834,7 @@ def main() -> int:
     failures = run_conversation_flow_evals()
     failures.extend(run_tool_policy_evals())
     failures.extend(run_tool_schema_evals())
+    failures.extend(run_lexicon_schema_evals())
     failures.extend(run_prompt_override_evals())
     failures.extend(run_runtime_availability_evals())
     failures.extend(run_language_lock_evals())

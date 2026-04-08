@@ -1,0 +1,25 @@
+{
+  "service_terms": [
+    "send order",
+    "send me order",
+    "send my order",
+    "order pdf",
+    "order file",
+    "invoice",
+    "pdf",
+    "status",
+    "subscription",
+    "renew"
+  ],
+  "price_terms": ["price", "cost", "discount", "cheap", "cheaper"],
+  "direct_buy_terms": ["confirm", "go ahead", "place order", "buy now"],
+  "explore_terms": ["what do you have", "show me", "options", "variants"],
+  "frustrated_terms": ["not helping", "why so long"],
+  "order_terms": ["confirm", "create order", "place order", "order"],
+  "add_to_order_terms": ["add to order", "append", "add more"],
+  "human_terms": ["manager", "human", "operator"],
+  "contact_details_patterns": [
+    "\\b(?:my\\s+name\\s+is|name\\s+is|i\\s+am|i'm|tel|phone|mobile|call\\s+me)\\b",
+    "\\b[+0]?\\d[\\d\\s().-]{7,}\\d\\b"
+  ]
+}

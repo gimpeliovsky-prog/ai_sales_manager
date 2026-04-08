@@ -3,6 +3,17 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.conversation_lexicon import (
+    add_to_order_regex,
+    contact_details_regex,
+    direct_buy_regex,
+    explore_regex,
+    frustrated_regex,
+    human_regex,
+    order_regex,
+    price_regex,
+    service_regex,
+)
 from app.i18n import text as i18n_text
 
 DEFAULT_STAGE = "discover"
@@ -170,6 +181,17 @@ _HUMAN_RE = re.compile(
 _CONTACT_DETAILS_RE = re.compile(
     r"(?is)(?:\b(?:my\s+name\s+is|name\s+is|i\s+am|i'm|tel|phone|mobile|call\s+me)\b|\b[+0]?\d[\d\s().-]{7,}\d\b)"
 )
+
+# Override legacy hardcoded regexes with data-driven lexicon-backed patterns.
+_SERVICE_RE = service_regex()
+_PRICE_RE = price_regex()
+_DIRECT_BUY_RE = direct_buy_regex()
+_EXPLORE_RE = explore_regex()
+_FRUSTRATED_RE = frustrated_regex()
+_ORDER_RE = order_regex()
+_ADD_TO_ORDER_RE = add_to_order_regex()
+_HUMAN_RE = human_regex()
+_CONTACT_DETAILS_RE = contact_details_regex()
 
 
 def _lead_profile_dict(profile: Any) -> dict[str, Any]:

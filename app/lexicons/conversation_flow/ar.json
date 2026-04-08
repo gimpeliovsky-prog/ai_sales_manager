@@ -1,0 +1,15 @@
+{
+  "service_terms": ["فاتورة", "حالة", "اشتراك"],
+  "service_regexes": ["\\bالفاتورة\\b"],
+  "price_terms": ["سعر", "خصم", "ارخص"],
+  "direct_buy_terms": ["أكد", "اطلب"],
+  "explore_terms": ["ما عندكم", "خيارات"],
+  "frustrated_terms": ["لا يساعد"],
+  "order_terms": ["أكد", "طلب"],
+  "add_to_order_terms": ["أضف", "المزيد"],
+  "human_terms": ["موظف", "مدير"],
+  "contact_details_patterns": [
+    "\\b(?:اسمي|انا|أنا)\\b",
+    "\\b[+0]?\\d[\\d\\s().-]{7,}\\d\\b"
+  ]
+}

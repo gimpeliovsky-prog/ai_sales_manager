@@ -1,0 +1,14 @@
+{
+  "service_terms": ["אישור", "חשבונית", "סטטוס"],
+  "price_terms": ["מחיר", "הנחה"],
+  "direct_buy_terms": ["אשר", "תזמין"],
+  "explore_terms": ["מה יש", "אפשרויות"],
+  "frustrated_terms": ["לא עוזר"],
+  "order_terms": ["אשר", "הזמנה"],
+  "add_to_order_terms": ["הוסף", "עוד"],
+  "human_terms": ["נציג", "מנהל"],
+  "contact_details_patterns": [
+    "\\b(?:שמי|קוראים\\s+לי|אני)\\b",
+    "\\b[+0]?\\d[\\d\\s().-]{7,}\\d\\b"
+  ]
+}
