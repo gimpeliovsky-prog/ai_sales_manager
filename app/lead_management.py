@@ -39,7 +39,7 @@ _YES_RE = re.compile(
     re.IGNORECASE,
 )
 _GENERIC_PRODUCT_TOKENS = {
-    "a", "an", "the", "i", "im", "i'm", "me", "my", "you", "your", "we", "our",
+    "a", "an", "the", "i", "im", "i'm", "me", "my", "you", "your", "we", "our", "it", "that", "them",
     "want", "need", "looking", "look", "for", "show", "have", "has", "do", "does",
     "what", "which", "who", "where", "when", "how", "please", "can", "could", "would",
     "product", "products", "item", "items", "model", "models", "variant", "variants",
@@ -1241,6 +1241,7 @@ def update_lead_profile_from_message(
         )
     semantic_text = _semantic_message_text(user_text)
     normalized_text = _clean_text(semantic_text)
+    explicit_single_item_interest = _normalize_single_item_interest(normalized_text, lead_config)
     requested_items = _parse_requested_items(semantic_text)
     qty = _first_qty(semantic_text)
     extracted_uom = _extract_single_item_uom(semantic_text, lead_config)
@@ -1305,6 +1306,17 @@ def update_lead_profile_from_message(
         profile["quantity"] = qty
     if extracted_uom and not requested_items:
         profile["uom"] = extracted_uom
+    if (
+        correction_requested
+        and product_resolution_intent == "add_to_order"
+        and explicit_single_item_interest
+        and _substantive_product_tokens(explicit_single_item_interest)
+        and not requested_items
+        and qty is None
+    ):
+        profile["quantity"] = None
+        if not extracted_uom:
+            profile["uom"] = None
     _set_product_resolution_state(profile)
     _synchronize_need_anchor(profile, lead_config)
     if _signal_matches(user_text, "urgency", lead_config):
