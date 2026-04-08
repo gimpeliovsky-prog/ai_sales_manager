@@ -125,6 +125,7 @@ class LicenseClient:
         lang: str | None = None,
         limit: int | None = None,
         enrich: bool | None = None,
+        compact: bool | None = None,
     ) -> dict:
         params: dict[str, str] = {}
         if item_group:
@@ -137,10 +138,16 @@ class LicenseClient:
             params["limit"] = str(limit)
         if enrich is not None:
             params["enrich"] = "true" if enrich else "false"
+        if compact is not None:
+            params["compact"] = "true" if compact else "false"
         return await self._get(f"/tenants/{company_code}/items", params or None)
 
-    async def get_item(self, company_code: str, item_code: str, lang: str | None = None) -> dict:
-        params = {"lang": lang} if lang else None
+    async def get_item(self, company_code: str, item_code: str, lang: str | None = None, compact: bool | None = None) -> dict:
+        params: dict[str, str] = {}
+        if lang:
+            params["lang"] = lang
+        if compact is not None:
+            params["compact"] = "true" if compact else "false"
         return await self._get(f"/tenants/{company_code}/items/{item_code}", params)
 
     async def get_item_availability(self, company_code: str, item_code: str, warehouse: str | None = None) -> dict:

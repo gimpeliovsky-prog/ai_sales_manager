@@ -387,7 +387,7 @@ async def _load_catalog_item(lc: LicenseClient, company_code: str, item_code: st
     requested_lang = _catalog_lang(current_lang)
     for candidate_lang in (requested_lang, None):
         try:
-            result = await lc.get_item(company_code, item_code, candidate_lang)
+            result = await lc.get_item(company_code, item_code, candidate_lang, compact=True)
         except Exception:
             continue
         if isinstance(result, dict) and result:
@@ -517,13 +517,13 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
                 result = {"items": [item_result], "resolved_via_item_code": explicit_item_code}
         try:
             if not result.get("items"):
-                result = await lc.get_items(company_code, item_group, item_name, catalog_lang)
+                result = await lc.get_items(company_code, item_group, item_name, catalog_lang, compact=True)
         except Exception:
             result = {"items": []}
         if not result.get("items"):
             for candidate in _build_search_candidates(item_name, item_group):
                 try:
-                    result = await lc.get_items(company_code, None, candidate, catalog_lang)
+                    result = await lc.get_items(company_code, None, candidate, catalog_lang, compact=True)
                 except Exception:
                     result = {"items": []}
                 if result.get("items"):
@@ -533,7 +533,7 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
                 if not candidate:
                     continue
                 try:
-                    result = await lc.get_items(company_code, None, candidate, None)
+                    result = await lc.get_items(company_code, None, candidate, None, compact=True)
                 except Exception:
                     result = {"items": []}
                 if result.get("items"):
