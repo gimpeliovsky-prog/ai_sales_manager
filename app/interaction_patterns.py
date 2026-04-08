@@ -2,6 +2,14 @@ from __future__ import annotations
 
 import re
 
+from app.interaction_lexicon import (
+    add_to_order_regex,
+    confirm_regex,
+    conversational_confirm_regex,
+    negative_confirm_regex,
+    order_change_regex,
+)
+
 CONFIRM_RE = re.compile(
     r"\b(confirm|confirmed|place order|place the order|create order|create the order|buy now|order it|"
     r"yes|ok|okay|sure|go ahead|"
@@ -58,6 +66,13 @@ ORDER_CHANGE_RE = re.compile(
     r"remove item|delete item|remove from order|delete from order)\b",
     re.IGNORECASE,
 )
+
+# Override legacy hardcoded regexes with lexicon-backed patterns.
+CONFIRM_RE = confirm_regex()
+NEGATIVE_CONFIRM_RE = negative_confirm_regex()
+CONVERSATIONAL_CONFIRM_RE = conversational_confirm_regex()
+ADD_TO_ORDER_RE = add_to_order_regex()
+ORDER_CHANGE_RE = order_change_regex()
 
 
 def has_explicit_confirmation(user_text: str) -> bool:

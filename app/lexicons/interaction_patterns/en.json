@@ -1,0 +1,37 @@
+{
+  "confirm_terms": [
+    "confirm",
+    "confirmed",
+    "place order",
+    "place the order",
+    "create order",
+    "create the order",
+    "buy now",
+    "order it",
+    "yes",
+    "ok",
+    "okay",
+    "sure",
+    "go ahead"
+  ],
+  "negative_confirm_terms": ["no", "not now", "do not", "don't", "cancel", "stop"],
+  "add_to_order_terms": ["add to order", "append", "add more"],
+  "order_change_terms": [
+    "change order",
+    "update order",
+    "modify order",
+    "edit order",
+    "change quantity",
+    "update quantity",
+    "reduce quantity",
+    "increase quantity",
+    "remove item",
+    "delete item",
+    "remove from order",
+    "delete from order"
+  ],
+  "conversational_confirm_regexes": [
+    "\\b(?:let'?s do it|do it|sounds good|looks good|that works|proceed|send it|book it)\\b",
+    "\\b(?:ok|okay|yes|sure)\\b.{0,24}\\b(?:go ahead|do it|proceed|send it|book it)\\b"
+  ]
+}

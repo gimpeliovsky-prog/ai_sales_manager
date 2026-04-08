@@ -1,0 +1,16 @@
+{
+  "confirm_terms": ["نعم", "أكد", "موافق"],
+  "negative_confirm_terms": ["لا"],
+  "add_to_order_terms": ["أضف", "المزيد"],
+  "order_change_terms": [
+    "غيّر الطلب",
+    "حدث الطلب",
+    "غيّر الكمية",
+    "حدث الكمية",
+    "احذف العنصر",
+    "أزل العنصر"
+  ],
+  "conversational_confirm_regexes": [
+    "\\b(?:تمام|موافق|يلا)\\b"
+  ]
+}

@@ -44,6 +44,20 @@ _CONVERSATION_REGEX_SECTIONS = {
 }
 _CONVERSATION_PATTERN_SECTIONS = {"contact_details_patterns"}
 _CONVERSATION_ALLOWED_KEYS = _CONVERSATION_TERM_SECTIONS | _CONVERSATION_REGEX_SECTIONS | _CONVERSATION_PATTERN_SECTIONS
+_INTERACTION_TERM_SECTIONS = {
+    "confirm_terms",
+    "negative_confirm_terms",
+    "add_to_order_terms",
+    "order_change_terms",
+}
+_INTERACTION_REGEX_SECTIONS = {
+    "confirm_regexes",
+    "negative_confirm_regexes",
+    "conversational_confirm_regexes",
+    "add_to_order_regexes",
+    "order_change_regexes",
+}
+_INTERACTION_ALLOWED_KEYS = _INTERACTION_TERM_SECTIONS | _INTERACTION_REGEX_SECTIONS
 _LANG_FILENAME_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]+)?$", re.IGNORECASE)
 
 
@@ -195,12 +209,28 @@ def validate_conversation_lexicon_file(path: str | Path) -> list[str]:
     return errors
 
 
+def validate_interaction_lexicon_file(path: str | Path) -> list[str]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    path_label = str(Path(path).name)
+    if not isinstance(payload, dict):
+        return [f"{path_label}: expected top-level object"]
+    errors = _validate_payload_keys(payload, allowed_keys=_INTERACTION_ALLOWED_KEYS, path_label=path_label)
+    for section in _INTERACTION_TERM_SECTIONS:
+        if section in payload:
+            errors.extend(_validate_string_list(payload.get(section), path_label=f"{path_label}.{section}"))
+    for section in _INTERACTION_REGEX_SECTIONS:
+        if section in payload:
+            errors.extend(_validate_regex_list(payload.get(section), path_label=f"{path_label}.{section}"))
+    return errors
+
+
 def validate_all_lexicons() -> list[str]:
     errors: list[str] = []
     families: list[tuple[str, Path, Any]] = [
         ("lead_management", _LEXICON_ROOT / "lead_management", validate_lead_lexicon_file),
         ("uom", _LEXICON_ROOT / "uom", validate_uom_lexicon_file),
         ("conversation_flow", _LEXICON_ROOT / "conversation_flow", validate_conversation_lexicon_file),
+        ("interaction_patterns", _LEXICON_ROOT / "interaction_patterns", validate_interaction_lexicon_file),
     ]
     for family_name, directory, validator in families:
         if not directory.exists():
