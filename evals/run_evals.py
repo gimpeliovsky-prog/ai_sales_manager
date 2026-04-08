@@ -901,6 +901,26 @@ def run_lead_management_evals() -> list[str]:
             "contact_plus_order_message_keeps_commercial_slots_only",
         )
     )
+    llm_driven_selection_profile = update_lead_profile_from_message(
+        current_profile={"status": "new_lead", "product_interest": "backpack", "product_resolution_status": "broad"},
+        user_text="which do you have?",
+        stage="discover",
+        behavior_class="explorer",
+        intent="browse_catalog",
+        customer_identified=True,
+        active_order_name=None,
+        llm_state_update={"next_action": "show_matching_options"},
+    )
+    failures.extend(
+        _assert_subset(
+            llm_driven_selection_profile,
+            {
+                "next_action": "show_matching_options",
+                "qualification_priority": "specific_item_selection",
+            },
+            "llm_next_action_override_prioritizes_option_selection",
+        )
+    )
 
     sourced_profile = update_lead_profile_source(
         current_profile=profile,
@@ -1356,6 +1376,7 @@ def run_llm_state_updater_evals() -> list[str]:
                 "intent": "browse_catalog",
                 "behavior_class": "explorer",
                 "confidence": 0.86,
+                "next_action": "show_matching_options",
                 "lead_patch": {
                     "product_interest": "travel backpacks",
                     "quantity": 5,
@@ -1374,6 +1395,7 @@ def run_llm_state_updater_evals() -> list[str]:
                 "valid": True,
                 "intent": "browse_catalog",
                 "behavior_class": "explorer",
+                "next_action": "show_matching_options",
             },
             "llm_state_updater_parses_valid_response",
         )

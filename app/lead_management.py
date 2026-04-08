@@ -1018,6 +1018,38 @@ def _qualification_priority_for(*, status: str, stage: str, profile: dict[str, A
     return "next_best_action", "Core qualification is sufficient; choose the next concrete sales step."
 
 
+def _llm_next_action_allowed(
+    *,
+    next_action: str,
+    profile: dict[str, Any],
+    customer_identified: bool,
+    status: str,
+) -> bool:
+    if not next_action:
+        return False
+    if next_action in {"handoff_manager", "recommend_next_step"}:
+        return True
+    if next_action == "fulfill_service_request":
+        return status == "service"
+    if next_action == "ask_need":
+        return not profile.get("product_interest")
+    if next_action in {"show_matching_options", "select_specific_item"}:
+        return bool(profile.get("product_interest")) and not bool(profile.get("catalog_item_code"))
+    if next_action == "ask_quantity":
+        return bool(profile.get("product_interest")) and not _has_quantity_detail(profile)
+    if next_action == "ask_unit":
+        return bool(profile.get("product_interest")) and _has_quantity_detail(profile) and not _has_unit_detail(profile)
+    if next_action == "ask_delivery_timing":
+        return bool(profile.get("product_interest")) and _has_quantity_detail(profile) and _has_unit_detail(profile)
+    if next_action == "ask_contact":
+        return not customer_identified and bool(profile.get("product_interest"))
+    if next_action == "quote_or_clarify_price":
+        return bool(profile.get("product_interest"))
+    if next_action == "confirm_order":
+        return bool(profile.get("product_interest")) and _has_quantity_detail(profile) and _has_unit_detail(profile)
+    return False
+
+
 def _set_qualification_priority(
     *,
     profile: dict[str, Any],
@@ -1113,6 +1145,7 @@ def update_lead_profile_from_message(
     customer_identified: bool,
     active_order_name: str | None,
     lead_config: dict[str, Any] | None = None,
+    llm_state_update: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     profile = normalize_lead_profile(current_profile)
     previous_status = str(profile.get("status") or "none")
@@ -1237,6 +1270,14 @@ def update_lead_profile_from_message(
         profile=profile,
         customer_identified=customer_identified,
     )
+    llm_next_action = str((llm_state_update or {}).get("next_action") or "").strip()
+    if _llm_next_action_allowed(
+        next_action=llm_next_action,
+        profile=profile,
+        customer_identified=customer_identified,
+        status=status,
+    ):
+        profile["next_action"] = llm_next_action
     if profile.get("order_correction_status") == "requested":
         profile["next_action"] = "clarify_order_correction"
     _set_qualification_priority(

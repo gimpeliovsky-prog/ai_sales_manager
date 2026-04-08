@@ -31,6 +31,21 @@ ALLOWED_DECISION_STATUSES = {
     "ready_to_buy",
 }
 
+ALLOWED_NEXT_ACTIONS = {
+    "handoff_manager",
+    "fulfill_service_request",
+    "ask_need",
+    "show_matching_options",
+    "select_specific_item",
+    "ask_quantity",
+    "ask_unit",
+    "ask_delivery_timing",
+    "ask_contact",
+    "quote_or_clarify_price",
+    "confirm_order",
+    "recommend_next_step",
+}
+
 SAFE_PATCH_FIELDS = {
     "product_interest",
     "quantity",
@@ -65,6 +80,7 @@ def parse_llm_state_update(text: str) -> dict[str, Any]:
         confidence = float(payload.get("confidence") or 0)
     except (TypeError, ValueError):
         confidence = 0.0
+    next_action = str(payload.get("next_action") or "").strip()
     lead_patch = payload.get("lead_patch") if isinstance(payload.get("lead_patch"), dict) else {}
 
     sanitized_patch: dict[str, Any] = {}
@@ -92,11 +108,14 @@ def parse_llm_state_update(text: str) -> dict[str, Any]:
         intent = ""
     if behavior_class not in ALLOWED_BEHAVIOR_CLASSES:
         behavior_class = ""
+    if next_action not in ALLOWED_NEXT_ACTIONS:
+        next_action = ""
 
     return {
-        "valid": bool(intent or behavior_class or sanitized_patch),
+        "valid": bool(intent or behavior_class or sanitized_patch or next_action),
         "intent": intent or None,
         "behavior_class": behavior_class or None,
+        "next_action": next_action or None,
         "confidence": max(0.0, min(1.0, confidence)),
         "lead_patch": sanitized_patch,
         "reason": _clean_text(payload.get("reason")),

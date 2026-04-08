@@ -821,9 +821,9 @@ def _state_updater_min_confidence(tenant: dict[str, Any]) -> float:
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
     sales_policy = ai_policy.get("sales_policy") if isinstance(ai_policy.get("sales_policy"), dict) else {}
     try:
-        return max(0.5, min(0.99, float(sales_policy.get("llm_state_updater_min_confidence", 0.7) or 0.7)))
+        return max(0.4, min(0.99, float(sales_policy.get("llm_state_updater_min_confidence", 0.55) or 0.55)))
     except (TypeError, ValueError):
-        return 0.7
+        return 0.55
 
 
 def _confirmation_min_confidence(tenant: dict[str, Any]) -> float:
@@ -867,15 +867,27 @@ async def _classify_state_with_llm(
     tenant: dict[str, Any],
 ) -> dict[str, Any]:
     lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    recent_messages: list[dict[str, Any]] = []
+    for row in list(session.get("messages") or [])[-6:]:
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("role") or "").strip()
+        content = _preview_text(str(row.get("content") or ""))
+        if role and content:
+            recent_messages.append({"role": role, "content": content})
     payload = {
         "model": model,
         "instructions": (
             "Classify the customer's latest message for sales-runtime state update. "
-            "Return only compact JSON with keys: intent, behavior_class, confidence, lead_patch, reason. "
+            "Return only compact JSON with keys: intent, behavior_class, confidence, next_action, lead_patch, reason. "
             "intent must be one of: low_signal, find_product, browse_catalog, order_detail, confirm_order, add_to_order, service_request, human_handoff. "
             "behavior_class must be one of: direct_buyer, explorer, unclear_request, price_sensitive, frustrated, service_request, returning_customer, silent_or_low_signal. "
+            "next_action must be one of: handoff_manager, fulfill_service_request, ask_need, show_matching_options, select_specific_item, ask_quantity, ask_unit, ask_delivery_timing, ask_contact, quote_or_clarify_price, confirm_order, recommend_next_step. "
             "lead_patch may include only these keys when clearly supported by the message and context: product_interest, quantity, uom, urgency, delivery_need, price_sensitivity, decision_status. "
-            "Do not invent values. Use any customer language. If unsure, keep lead_patch empty and lower confidence."
+            "Use next_action to express the single best next sales step after this message. "
+            "Prefer show_matching_options or select_specific_item when the customer named only a broad product and asks what exists. "
+            "Do not ask again for quantity or UOM when they are already known in the lead profile unless the customer changes them. "
+            "Do not invent values. Use any customer language. If unsure, keep lead_patch empty, next_action empty, and lower confidence."
         ),
         "input": [
             {
@@ -896,7 +908,13 @@ async def _classify_state_with_llm(
                             "next_action": lead_profile.get("next_action"),
                             "qualification_priority": lead_profile.get("qualification_priority"),
                             "price_sensitivity": lead_profile.get("price_sensitivity"),
+                            "catalog_lookup_query": lead_profile.get("catalog_lookup_query"),
+                            "catalog_lookup_status": lead_profile.get("catalog_lookup_status"),
+                            "catalog_lookup_match_count": lead_profile.get("catalog_lookup_match_count"),
+                            "catalog_item_code": lead_profile.get("catalog_item_code"),
+                            "catalog_item_name": lead_profile.get("catalog_item_name"),
                         },
+                        "recent_messages": recent_messages,
                     },
                     ensure_ascii=False,
                 ),
@@ -1172,6 +1190,7 @@ async def process_message_result(
         customer_identified=bool(session.get("erp_customer_id")),
         active_order_name=active_order_name,
         lead_config=_lead_management_config(tenant),
+        llm_state_update=llm_state_result if use_llm_state else None,
     )
     session.update(
         derive_conversation_state(
