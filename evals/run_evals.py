@@ -1405,6 +1405,7 @@ def run_llm_state_updater_evals() -> list[str]:
     patched_profile = apply_llm_lead_patch(
         current_profile={"product_interest": "backpack", "catalog_item_code": "BP-1", "catalog_item_name": "Old Backpack"},
         patch=parsed.get("lead_patch"),
+        intent=parsed.get("intent"),
     )
     failures.extend(
         _assert_subset(
@@ -1422,6 +1423,22 @@ def run_llm_state_updater_evals() -> list[str]:
     invalid = parse_llm_state_update('{"intent":"made_up","behavior_class":"unknown","lead_patch":{"quantity":"x"}}')
     if invalid.get("valid"):
         failures.append(f"llm_state_updater_rejects_invalid_values: got {invalid!r}")
+    slot_safe_profile = apply_llm_lead_patch(
+        current_profile={"product_interest": "book", "catalog_item_code": "SKU003", "catalog_item_name": "Book", "qualification_priority": "unit_or_variant"},
+        patch={"product_interest": "piece", "uom": "piece"},
+        intent="order_detail",
+    )
+    failures.extend(
+        _assert_subset(
+            slot_safe_profile,
+            {
+                "product_interest": "book",
+                "catalog_item_code": "SKU003",
+                "uom": "piece",
+            },
+            "llm_state_updater_does_not_replace_product_with_uom_reply",
+        )
+    )
     return failures
 
 

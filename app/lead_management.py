@@ -500,6 +500,7 @@ def apply_llm_lead_patch(
     current_profile: Any,
     patch: dict[str, Any] | None,
     lead_config: dict[str, Any] | None = None,
+    intent: str | None = None,
 ) -> dict[str, Any]:
     profile = normalize_lead_profile(current_profile)
     if not isinstance(patch, dict) or not patch:
@@ -508,7 +509,24 @@ def apply_llm_lead_patch(
     previous_interest = _clean_text(profile.get("product_interest"))
     if "product_interest" in patch:
         normalized_interest = _normalize_single_item_interest(patch.get("product_interest"), lead_config) or _clean_text(patch.get("product_interest"))
-        if normalized_interest:
+        current_priority = str(profile.get("qualification_priority") or "product_need")
+        patch_qty = _first_number(patch.get("quantity")) if "quantity" in patch else None
+        patch_uom = canonical_uom(patch.get("uom"), _uom_config(lead_config, "single_item_uom_terms")) or _clean_text(patch.get("uom"), limit=40)
+        allow_interest_update = bool(
+            normalized_interest and (
+                not previous_interest
+                or _should_replace_product_interest(
+                    current_interest=previous_interest,
+                    normalized_text=normalized_interest,
+                    current_priority=current_priority,
+                    resolved_intent=str(intent or "find_product"),
+                    extracted_uom=patch_uom,
+                    qty=patch_qty,
+                    config=lead_config,
+                )
+            )
+        )
+        if allow_interest_update:
             profile["product_interest"] = normalized_interest
             profile["need"] = profile.get("need") or normalized_interest
     if "quantity" in patch:

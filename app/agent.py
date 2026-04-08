@@ -1163,6 +1163,7 @@ async def process_message_result(
             current_profile=previous_lead_profile,
             patch=llm_state_result.get("lead_patch") if isinstance(llm_state_result.get("lead_patch"), dict) else {},
             lead_config=_lead_management_config(tenant),
+            intent=llm_state_result.get("intent"),
         )
 
     fallback_behavior_class, fallback_behavior_confidence = classify_behavior(user_text, session, ai_policy=ai_policy)
