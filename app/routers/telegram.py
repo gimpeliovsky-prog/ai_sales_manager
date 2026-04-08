@@ -15,6 +15,7 @@ from app.sales_timeline import append_lead_timeline_event
 from app.session_store import (
     clear_session,
     load_session,
+    new_session,
     resolve_lead_session,
     save_sales_owner_telegram_chat,
     save_session,
@@ -510,6 +511,7 @@ async def telegram_webhook(
 
     if text in ("/reset", "/новый"):
         await clear_session("telegram", chat_id)
+        session = new_session(company_code=tenant.get("company_code"))
         result = {"text": get_intro_message(greeting_lang), "documents": []}
     elif _matches_debug_catalog_command(text):
         try:
@@ -534,6 +536,7 @@ async def telegram_webhook(
             result = {"text": i18n_text("welcome.generic", greeting_lang), "documents": []}
         else:
             await clear_session("telegram", chat_id)
+            session = new_session(company_code=tenant.get("company_code"))
             result = {"text": get_intro_message(greeting_lang), "documents": []}
     elif _ORDER_PDF_RE.match(text):
         order_name = session.get("last_sales_order_name")
