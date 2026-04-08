@@ -1422,6 +1422,17 @@ def update_lead_profile_from_tool(
         profile["active_order_checked_at"] = resolved_now.isoformat()
         if profile.get("order_correction_status") == "requested":
             profile["next_action"] = "apply_order_correction" if tool_result.get("can_modify") else "handoff_manager"
+    if tool_name in {"get_sales_order_status", "update_sales_order"} and tool_result.get("error_code") == "sales_order_not_modifiable":
+        profile["target_order_id"] = (
+            tool_result.get("sales_order_name")
+            or profile.get("target_order_id")
+            or active_order_name
+        )
+        profile["active_order_state"] = tool_result.get("order_state") or profile.get("active_order_state") or "submitted"
+        profile["active_order_can_modify"] = False
+        profile["active_order_checked_at"] = resolved_now.isoformat()
+        profile["order_correction_status"] = "requested"
+        profile["next_action"] = "handoff_manager"
     if tool_name == "get_item_availability" and not tool_result.get("error"):
         profile["availability_item_code"] = _clean_text(tool_result.get("item_code"), limit=64)
         profile["availability_item_name"] = _clean_text(tool_result.get("item_name"), limit=160)

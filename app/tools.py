@@ -2,6 +2,8 @@ import json
 import re
 from typing import Any
 
+import httpx
+
 from app.catalog_localization import catalog_lang as _catalog_lang, localize_catalog_result as _localize_catalog_result
 from app.i18n import text as i18n_text
 from app.interaction_patterns import has_add_to_order_intent, has_explicit_confirmation
@@ -387,6 +389,19 @@ async def execute_tool(
             confirmation_override,
         )
         return json.dumps(result, ensure_ascii=False, default=str)
+    except httpx.HTTPStatusError as exc:
+        detail: Any = None
+        try:
+            payload = exc.response.json()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            detail = payload.get("detail", payload)
+        elif exc.response is not None:
+            detail = exc.response.text
+        if isinstance(detail, dict):
+            return json.dumps(detail, ensure_ascii=False, default=str)
+        return json.dumps({"error": str(detail or exc)})
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
