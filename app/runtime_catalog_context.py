@@ -35,13 +35,13 @@ def should_prefetch_catalog_options(*, lead_profile: dict[str, Any] | None, inte
     normalized_last_query = re.sub(r"\s+", " ", str(profile.get("catalog_lookup_query") or "").strip()).casefold()
     last_status = str(profile.get("catalog_lookup_status") or "unknown")
     next_action = str(profile.get("next_action") or "")
-    if str(intent or "") in {"find_product", "browse_catalog"} and normalized_last_query != normalized_search_term:
+    if str(intent or "") in {"find_product", "browse_catalog", "order_detail", "add_to_order"} and normalized_last_query != normalized_search_term:
         return True
-    if str(intent or "") in {"find_product", "browse_catalog"} and last_status in {"unknown", "error"}:
+    if str(intent or "") in {"find_product", "browse_catalog", "order_detail", "add_to_order"} and last_status in {"unknown", "error"}:
         return True
     if next_action == "show_matching_options":
         return True
-    return next_action == "select_specific_item" and str(intent or "") == "browse_catalog"
+    return next_action == "select_specific_item" and str(intent or "") in {"browse_catalog", "order_detail", "add_to_order"}
 
 
 def build_catalog_prefetch_context(tool_result: dict[str, Any], *, search_term: str) -> str:

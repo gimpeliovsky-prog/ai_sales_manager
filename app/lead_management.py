@@ -186,6 +186,10 @@ DEFAULT_SIGNAL_TERMS: dict[str, list[str]] = {
         "change my order",
         "update my order",
         "edit order",
+        "add to order",
+        "add to this order",
+        "add item",
+        "add items",
         "change delivery",
         "change quantity",
         "remove item",
@@ -742,7 +746,7 @@ def _should_replace_product_interest(
 ) -> bool:
     if not normalized_text:
         return False
-    if resolved_intent not in {"find_product", "browse_catalog", "order_detail"}:
+    if resolved_intent not in {"find_product", "browse_catalog", "order_detail", "add_to_order"}:
         return False
     candidate = _normalize_single_item_interest(normalized_text, config)
     if not candidate:
@@ -789,7 +793,7 @@ def _configured_regexes(config: dict[str, Any] | None, signal: str) -> list[str]
 def _order_correction_requested(*, user_text: str, intent: str, active_order_name: str | None, config: dict[str, Any] | None) -> bool:
     if not active_order_name:
         return False
-    if intent in {"add_to_order", "service_request"}:
+    if intent == "add_to_order":
         return True
     if _signal_matches(user_text, "order_correction", config):
         return True
@@ -1433,6 +1437,11 @@ def update_lead_profile_from_tool(
     if tool_name == "create_invoice" and tool_result.get("name"):
         profile["status"] = "won"
     if tool_name == "create_sales_order" and tool_result.get("name"):
+        profile["target_order_id"] = _clean_text(tool_result.get("name"), limit=120) or profile.get("target_order_id")
+        profile["order_correction_status"] = "none"
+        profile["active_order_state"] = "draft"
+        profile["active_order_can_modify"] = True
+        profile["active_order_checked_at"] = resolved_now.isoformat()
         profile["quote_status"] = "accepted"
         profile["quote_accepted_at"] = profile.get("quote_accepted_at") or resolved_now.isoformat()
         profile["order_total"] = _first_number(
@@ -1445,6 +1454,12 @@ def update_lead_profile_from_tool(
         profile["currency"] = _first_text(tool_result.get("currency"), tool_result.get("company_currency"), limit=16)
         profile["won_revenue"] = profile.get("order_total")
     if tool_name == "update_sales_order" and tool_result.get("name"):
+        profile["target_order_id"] = _clean_text(tool_result.get("name"), limit=120) or profile.get("target_order_id")
+        profile["order_correction_status"] = "none"
+        profile["correction_applied_at"] = resolved_now.isoformat()
+        profile["active_order_state"] = "draft"
+        profile["active_order_can_modify"] = True
+        profile["active_order_checked_at"] = resolved_now.isoformat()
         profile["order_total"] = _first_number(
             tool_result.get("grand_total"),
             tool_result.get("rounded_total"),
