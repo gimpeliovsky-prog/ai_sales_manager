@@ -196,6 +196,25 @@ def run_prompt_override_evals() -> list[str]:
         failures.append("prompt_override_stage_append: expected custom stage prompt to appear in system prompt")
     if "Use the tenant-specific discovery question before recommending an item." not in prompt:
         failures.append("prompt_override_sales_playbook_append: expected custom sales playbook prompt to appear in system prompt")
+    guarded_prompt = build_runtime_system_prompt(
+        tenant={"company_name": "ACME", "company_code": "acme"},
+        lang="en",
+        channel="telegram",
+        stage="discover",
+        behavior_class="explorer",
+        lead_profile={
+            "product_interest": "backpack",
+            "product_resolution_status": "broad",
+            "quantity": 10,
+            "uom": "piece",
+            "next_action": "show_matching_options",
+            "requested_items_need_uom_confirmation": False,
+        },
+    )
+    if "Do not ask for unit or package again" not in guarded_prompt:
+        failures.append("prompt_state_guard_known_uom: expected known-uom guard in prompt")
+    if "The next step is to show matching catalog options" not in guarded_prompt:
+        failures.append("prompt_state_guard_show_matching_options: expected option-selection guard in prompt")
 
     handoff_message = get_handoff_message("ru", ai_policy=tenant["ai_policy"])
     if handoff_message != "Передаю живому менеджеру.":
@@ -626,6 +645,48 @@ def run_lead_management_evals() -> list[str]:
                 "followup_strategy": "product_selection_missing",
             },
             "generic_product_browse_moves_to_show_matching_options",
+        )
+    )
+    preserve_interest_on_browse_request = update_lead_profile_from_message(
+        current_profile={"status": "qualified", "product_interest": "backpack", "quantity": 10, "uom": "piece"},
+        user_text="which do you have?",
+        stage="discover",
+        behavior_class="explorer",
+        intent="browse_catalog",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            preserve_interest_on_browse_request,
+            {
+                "product_interest": "backpack",
+                "quantity": 10.0,
+                "uom": "piece",
+                "next_action": "show_matching_options",
+            },
+            "browse_request_does_not_replace_existing_product_interest",
+        )
+    )
+    refine_interest_on_browse_request = update_lead_profile_from_message(
+        current_profile={"status": "qualified", "product_interest": "backpack", "quantity": 10, "uom": "piece"},
+        user_text="show me travel backpacks",
+        stage="discover",
+        behavior_class="explorer",
+        intent="browse_catalog",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            refine_interest_on_browse_request,
+            {
+                "product_interest": "travel backpacks",
+                "quantity": 10.0,
+                "uom": "piece",
+                "next_action": "show_matching_options",
+            },
+            "browse_request_can_refine_existing_product_interest",
         )
     )
     preserve_product_on_uom_reply = update_lead_profile_from_message(

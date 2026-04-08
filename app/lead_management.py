@@ -25,11 +25,33 @@ LEAD_STATUSES = {
 _QTY_RE = re.compile(r"\b\d+(?:[.,]\d+)?\b")
 _COMPACT_QTY_UOM_RE = re.compile(r"(?<!\w)(?P<qty>\d+(?:[.,]\d+)?)(?P<uom>[^\W\d_]{1,16})(?!\w)", re.UNICODE)
 _ITEM_QTY_SEGMENT_RE = re.compile(r"^\s*(?P<name>.+?)\s+(?P<qty>\d+(?:[.,]\d+)?)(?:\s+(?P<uom>[^\d,;]+))?\s*$")
+_TOKEN_RE = re.compile(r"[^\W\d_]+(?:[-'][^\W\d_]+)*", re.UNICODE)
+_BROWSE_SCAFFOLDING_RE = re.compile(
+    r"\b(?:show\s+me|what\s+do\s+you\s+have|which\s+do\s+you\s+have|what\s+options\s+do\s+you\s+have|"
+    r"какие\s+есть|что\s+есть|покажи|покажите|"
+    r"מה\s+יש|תראה\s+לי|הראה\s+לי|"
+    r"ما\s+عندكم|اعرض\s+لي|أرني)\b",
+    re.IGNORECASE,
+)
 _YES_RE = re.compile(
     r"(?:\byes\b|\byeah\b|\byep\b|\bok(?:ay)?\b|\bcorrect\b|\bright\b|\bconfirmed?\b|"
     r"\u0434\u0430|\u0430\u0433\u0430|\u0432\u0435\u0440\u043d\u043e|\u043f\u0440\u0430\u0432\u0438\u043b\u044c\u043d\u043e)",
     re.IGNORECASE,
 )
+_GENERIC_PRODUCT_TOKENS = {
+    "a", "an", "the", "i", "im", "i'm", "me", "my", "you", "your", "we", "our",
+    "want", "need", "looking", "look", "for", "show", "have", "has", "do", "does",
+    "what", "which", "who", "where", "when", "how", "please", "can", "could", "would",
+    "product", "products", "item", "items", "model", "models", "variant", "variants",
+    "option", "options", "type", "types", "name", "exact", "another", "until", "know",
+    "dont", "don't", "not",
+    "что", "какие", "какой", "покажи", "покажите", "есть", "товар", "товары", "позиция", "позиции",
+    "модель", "модели", "вариант", "варианты", "название", "точное", "не", "знаю",
+    "מה", "איזה", "יש", "תראה", "הראה", "אפשרויות", "אפשרות", "מוצר", "מוצרים", "דגם", "דגמים",
+    "וריאנט", "וריאנטים", "שם", "מדויק", "לא", "יודע",
+    "ما", "أي", "عندكم", "اعرض", "أرني", "خيارات", "خيار", "منتج", "منتجات", "صنف", "اصناف",
+    "موديل", "موديلات", "نوع", "أنواع", "اسم", "دقيق", "لا", "اعرف",
+}
 
 
 def normalize_telegram_username(username: Any) -> str:
@@ -502,6 +524,7 @@ def _normalize_single_item_interest(text: str, config: dict[str, Any] | None) ->
     if not raw.strip():
         return None
     normalized = raw
+    normalized = re.sub(_BROWSE_SCAFFOLDING_RE, " ", normalized)
     normalized = re.sub(r"\b(?:i am looking for|i'm looking for|looking for|i want|want|need)\b", " ", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"\b(?:a|an|the)\b", " ", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"\d+(?:[.,]\d+)?", " ", normalized)
@@ -522,6 +545,27 @@ def _same_interest(a: str | None, b: str | None) -> bool:
     return left == right or left in right or right in left
 
 
+def _interest_tokens(text: str | None) -> list[str]:
+    return [token.casefold() for token in _TOKEN_RE.findall(str(text or ""))]
+
+
+def _substantive_product_tokens(text: str | None) -> list[str]:
+    tokens = _interest_tokens(text)
+    return [token for token in tokens if token not in _GENERIC_PRODUCT_TOKENS and len(token) > 1]
+
+
+def _refines_interest(candidate: str | None, current_interest: str | None) -> bool:
+    candidate_text = str(candidate or "").strip().casefold()
+    current_text = str(current_interest or "").strip().casefold()
+    if not candidate_text or not current_text:
+        return False
+    candidate_tokens = set(_substantive_product_tokens(candidate))
+    current_tokens = set(_substantive_product_tokens(current_interest))
+    if candidate_tokens and current_tokens and current_tokens.issubset(candidate_tokens) and candidate_tokens != current_tokens:
+        return True
+    return _same_interest(candidate_text, current_text) and len(candidate_text) > len(current_text) + 3
+
+
 def _should_replace_product_interest(
     *,
     current_interest: str | None,
@@ -539,9 +583,13 @@ def _should_replace_product_interest(
     candidate = _normalize_single_item_interest(normalized_text, config)
     if not candidate:
         return False
+    if not _substantive_product_tokens(candidate):
+        return False
     if not current_interest:
         return True
     if _same_interest(candidate, current_interest):
+        return _refines_interest(candidate, current_interest)
+    if resolved_intent == "browse_catalog" and not _refines_interest(candidate, current_interest):
         return False
     if extracted_uom and candidate.casefold() == str(extracted_uom).casefold():
         return False

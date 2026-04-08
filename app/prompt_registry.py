@@ -202,6 +202,34 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
     return lines
 
 
+def _lead_state_guard_lines(lead_profile: dict[str, Any] | None) -> list[str]:
+    if not isinstance(lead_profile, dict):
+        return []
+    lines: list[str] = []
+    product_interest = lead_profile.get("product_interest")
+    quantity = lead_profile.get("quantity")
+    uom = lead_profile.get("uom")
+    if product_interest:
+        if lead_profile.get("product_resolution_status") == "broad":
+            lines.append(
+                f"Known product category is already established as {product_interest}. Do not ask the customer to repeat that category."
+            )
+        else:
+            lines.append(
+                f"Known product is already established as {product_interest}. Do not ask the customer to repeat it."
+            )
+    if quantity not in (None, "", []):
+        lines.append(f"Known quantity is already {quantity}. Do not ask for quantity again unless the customer changes it.")
+    if uom and not lead_profile.get("requested_items_need_uom_confirmation"):
+        lines.append(f"Known unit is already {uom}. Do not ask for unit or package again unless the customer changes it.")
+    next_action = str(lead_profile.get("next_action") or "")
+    if next_action == "show_matching_options":
+        lines.append("The next step is to show matching catalog options, not to ask again for already known product, quantity, or unit details.")
+    elif next_action == "select_specific_item":
+        lines.append("The next step is to resolve the exact model or variant only; do not re-ask already known product category, quantity, or unit.")
+    return lines
+
+
 def _tenant_context_lines(tenant: dict[str, Any], lang: str) -> list[str]:
     if lang == "auto":
         lines = ["Customer reply language for this turn: auto-detect from the customer's message and reply in that same language."]
@@ -314,6 +342,10 @@ def build_runtime_system_prompt(
     if lead_profile_context:
         lines.append("")
         lines.extend(_section("Lead profile", lead_profile_context))
+    lead_state_guards = _lead_state_guard_lines(lead_profile)
+    if lead_state_guards:
+        lines.append("")
+        lines.extend(_section("Lead state guards", lead_state_guards))
     lines.append("")
     lines.extend(
         _section(
