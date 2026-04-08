@@ -532,6 +532,12 @@ def apply_llm_lead_patch(
             )
         )
         if allow_interest_update:
+            if previous_interest and normalized_interest and not _same_interest(normalized_interest, previous_interest):
+                _reset_product_qualification_state(
+                    profile,
+                    keep_quantity=patch_qty is not None,
+                    keep_uom=bool(patch_uom),
+                )
             profile["product_interest"] = normalized_interest
             profile["need"] = profile.get("need") or normalized_interest
     if "quantity" in patch:
@@ -930,6 +936,25 @@ def _reset_catalog_lookup_state(profile: dict[str, Any]) -> None:
     profile["catalog_lookup_at"] = None
 
 
+def _reset_product_qualification_state(
+    profile: dict[str, Any],
+    *,
+    keep_quantity: bool = False,
+    keep_uom: bool = False,
+) -> None:
+    _reset_catalog_lookup_state(profile)
+    if not keep_quantity:
+        profile["quantity"] = None
+    if not keep_uom:
+        profile["uom"] = None
+    profile["requested_items"] = []
+    profile["requested_item_count"] = 0
+    profile["requested_items_have_quantities"] = False
+    profile["requested_items_need_uom_confirmation"] = False
+    profile["requested_items_assumed_uom"] = None
+    profile["requested_items_uom_assumption_status"] = None
+
+
 def _first_number(*values: Any) -> float | None:
     for value in values:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -1263,6 +1288,13 @@ def update_lead_profile_from_message(
         config=lead_config,
     ):
         normalized_interest = _normalize_single_item_interest(normalized_text, lead_config) or normalized_text
+        previous_interest = _clean_text(profile.get("product_interest"))
+        if previous_interest and normalized_interest and not _same_interest(normalized_interest, previous_interest):
+            _reset_product_qualification_state(
+                profile,
+                keep_quantity=qty is not None,
+                keep_uom=bool(extracted_uom),
+            )
         profile["product_interest"] = normalized_interest
         profile["need"] = profile.get("need") or normalized_interest
         _reset_catalog_lookup_state(profile)
