@@ -52,7 +52,7 @@ from app.sales_quality import evaluate_conversation_quality  # noqa: E402
 from app.sales_reporting import crm_export_contract, dashboard_contract, filter_leads, lead_snapshot, paginate_leads, summarize_leads, summarize_manager_performance, summarize_source_funnel, summarize_time_funnel  # noqa: E402
 from app.sales_timeline import append_lead_timeline_event  # noqa: E402
 from app.tool_policy import evaluate_tool_call  # noqa: E402
-from app.tools import _filter_catalog_matches  # noqa: E402
+from app.tools import _extract_catalog_item_code, _filter_catalog_matches  # noqa: E402
 from app.uom_semantics import localize_uom_label, resolve_catalog_uom  # noqa: E402
 
 
@@ -426,6 +426,8 @@ def run_catalog_query_normalization_evals() -> list[str]:
     items = filtered.get("items") if isinstance(filtered, dict) else None
     if not isinstance(items, list) or len(items) != 1:
         failures.append(f"catalog_match_filter_keeps_substantive_book_match: got {filtered!r}")
+    if _extract_catalog_item_code("Book [SKU003]") != "SKU003":
+        failures.append(f"catalog_item_code_extraction_bracketed_reference: got {_extract_catalog_item_code('Book [SKU003]')!r}")
     return failures
 
 

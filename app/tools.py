@@ -207,6 +207,21 @@ def _normalize_match_text(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9?-??-???\u0590-\u05FF\u0600-\u06FF]+", " ", text or "").strip().lower()
 
 
+def _extract_catalog_item_code(text: str | None) -> str | None:
+    raw_text = str(text or "").strip()
+    if not raw_text:
+        return None
+    bracket_match = re.search(r"\[([^\[\]]+)\]", raw_text)
+    if bracket_match:
+        candidate = re.sub(r"\s+", " ", str(bracket_match.group(1) or "")).strip()
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,63}", candidate or ""):
+            return candidate
+    normalized = re.sub(r"\s+", " ", raw_text).strip()
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,63}", normalized or ""):
+        return normalized
+    return None
+
+
 def _query_tokens(text: str | None) -> list[str]:
     normalized_query = normalize_catalog_lookup_query(text)
     if not normalized_query:
@@ -387,8 +402,15 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
         item_name = normalize_catalog_lookup_query(raw_item_name, lead_config) or raw_item_name
         original_query = item_name or item_group or raw_item_name or raw_item_group
         catalog_lang = _catalog_lang(current_lang)
+        explicit_item_code = _extract_catalog_item_code(raw_item_name) or _extract_catalog_item_code(raw_item_group)
+        result = {"items": []}
+        if explicit_item_code:
+            item_result = await _load_catalog_item(lc, company_code, explicit_item_code, current_lang)
+            if item_result:
+                result = {"items": [item_result], "resolved_via_item_code": explicit_item_code}
         try:
-            result = await lc.get_items(company_code, item_group, item_name, catalog_lang)
+            if not result.get("items"):
+                result = await lc.get_items(company_code, item_group, item_name, catalog_lang)
         except Exception:
             result = {"items": []}
         if not result.get("items"):
