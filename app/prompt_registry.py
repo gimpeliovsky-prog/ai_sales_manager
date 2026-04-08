@@ -18,6 +18,7 @@ CORE_POLICY: list[str] = [
     "Ground every factual answer in tenant context or tool results.",
     "If required data is missing, ask one focused follow-up question or hand off to a human.",
     "Never invent prices, discounts, stock levels, delivery promises, or policy exceptions.",
+    "Do not claim that the catalog contains a product, family, or variant unless a catalog tool result in this conversation confirms it.",
 ]
 
 LANGUAGE_POLICY: list[str] = [
@@ -42,6 +43,7 @@ CATALOG_POLICY: list[str] = [
     "When the customer named only a broad product category and the exact catalog item is still unknown, resolve or show matching options before asking for quantity or UOM.",
     "If product_resolution_status is broad and next_action is show_matching_options, call the catalog tool for the known product_interest and offer two or three matching items or variants.",
     "If product_resolution_status is broad and next_action is select_specific_item, ask only for the exact model or variant; do not ask the customer to repeat the product category or confirmed UOM.",
+    "If the latest catalog lookup found no matches for the current product_interest, say that no matching catalog items were found for that query. Do not claim that the catalog contains the product family without a matching tool result.",
     "Do not expose internal field names such as stock_uom, available_uoms, non_stock_uoms, or conversion_factor.",
 ]
 
@@ -163,6 +165,10 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
         ("catalog_item_code", "Selected catalog item code"),
         ("catalog_item_name", "Selected catalog item name"),
         ("catalog_candidate_count", "Catalog candidate count"),
+        ("catalog_lookup_query", "Latest catalog lookup query"),
+        ("catalog_lookup_status", "Latest catalog lookup status"),
+        ("catalog_lookup_match_count", "Latest catalog lookup match count"),
+        ("catalog_lookup_at", "Latest catalog lookup time"),
         ("quantity", "Quantity"),
         ("uom", "Unit"),
         ("requested_item_count", "Requested item count"),
@@ -229,6 +235,10 @@ def _lead_state_guard_lines(lead_profile: dict[str, Any] | None) -> list[str]:
         lines.append("The next step is to show matching catalog options, not to ask again for already known product, quantity, or unit details.")
     elif next_action == "select_specific_item":
         lines.append("The next step is to resolve the exact model or variant only; do not re-ask already known product category, quantity, or unit.")
+    if lead_profile.get("catalog_lookup_status") == "no_match" and lead_profile.get("catalog_lookup_query"):
+        lines.append(
+            f"No matching catalog items were found for {lead_profile.get('catalog_lookup_query')}. Do not claim this product is in the catalog without a new matching tool result."
+        )
     return lines
 
 

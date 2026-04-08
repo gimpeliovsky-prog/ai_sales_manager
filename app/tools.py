@@ -206,6 +206,57 @@ def _build_search_candidates(*texts: str | None) -> list[str]:
     return candidates[:6]
 
 
+def _catalog_item_search_text(item: dict[str, Any]) -> str:
+    return _normalize_match_text(
+        " ".join(
+            str(item.get(key) or "")
+            for key in ("display_item_name", "item_name", "item_group", "item_code", "description")
+        )
+    )
+
+
+def _token_matches(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    if len(left) >= 4 and len(right) >= 4 and (left.startswith(right) or right.startswith(left)):
+        return True
+    return len(left) >= 5 and len(right) >= 5 and (left in right or right in left)
+
+
+def _catalog_item_matches_query(query: str | None, item: dict[str, Any]) -> bool:
+    normalized_query = _normalize_match_text(query or "")
+    if not normalized_query:
+        return True
+    item_text = _catalog_item_search_text(item)
+    if not item_text:
+        return False
+    if normalized_query in item_text:
+        return True
+    query_tokens = [token for token in normalized_query.split() if len(token) >= 3]
+    item_tokens = [token for token in item_text.split() if len(token) >= 3]
+    if not query_tokens or not item_tokens:
+        return False
+    matched = sum(1 for token in query_tokens if any(_token_matches(token, item_token) for item_token in item_tokens))
+    if len(query_tokens) == 1:
+        return matched >= 1
+    required = min(len(query_tokens), 2)
+    return matched >= required
+
+
+def _filter_catalog_matches(result: dict[str, Any], query: str | None) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {"items": []}
+    items = result.get("items")
+    if not isinstance(items, list):
+        return result
+    filtered_items = [item for item in items if isinstance(item, dict) and _catalog_item_matches_query(query, item)]
+    updated = dict(result)
+    updated["items"] = filtered_items
+    if filtered_items and len(filtered_items) != len(items):
+        updated["match_filter_applied"] = True
+    return updated
+
+
 async def _load_catalog_item(lc: LicenseClient, company_code: str, item_code: str, current_lang: str) -> dict[str, Any]:
     requested_lang = _catalog_lang(current_lang)
     for candidate_lang in (requested_lang, None):
@@ -309,6 +360,7 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
     if name == "get_product_catalog":
         item_group = inp.get("item_group")
         item_name = inp.get("item_name")
+        original_query = item_name or item_group
         catalog_lang = _catalog_lang(current_lang)
         try:
             result = await lc.get_items(company_code, item_group, item_name, catalog_lang)
@@ -332,7 +384,7 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
                     result = {"items": []}
                 if result.get("items"):
                     break
-        localized = _localize_catalog_result(result, current_lang, ai_policy)
+        localized = _localize_catalog_result(_filter_catalog_matches(result, original_query), current_lang, ai_policy)
         if should_hide_catalog_prices(lead_profile, ai_policy):
             cleaned = remove_price_fields(localized)
             if isinstance(cleaned, dict):

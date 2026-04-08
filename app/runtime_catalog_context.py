@@ -27,9 +27,17 @@ def should_prefetch_catalog_options(*, lead_profile: dict[str, Any] | None, inte
         return False
     if profile.get("catalog_item_code"):
         return False
-    if not catalog_prefetch_search_term(profile):
+    search_term = catalog_prefetch_search_term(profile)
+    if not search_term:
         return False
+    normalized_search_term = re.sub(r"\s+", " ", str(search_term).strip()).casefold()
+    normalized_last_query = re.sub(r"\s+", " ", str(profile.get("catalog_lookup_query") or "").strip()).casefold()
+    last_status = str(profile.get("catalog_lookup_status") or "unknown")
     next_action = str(profile.get("next_action") or "")
+    if str(intent or "") in {"find_product", "browse_catalog"} and normalized_last_query != normalized_search_term:
+        return True
+    if str(intent or "") in {"find_product", "browse_catalog"} and last_status in {"unknown", "error"}:
+        return True
     if next_action == "show_matching_options":
         return True
     return next_action == "select_specific_item" and str(intent or "") == "browse_catalog"
@@ -41,12 +49,14 @@ def build_catalog_prefetch_context(tool_result: dict[str, Any], *, search_term: 
         return (
             f'Runtime catalog lookup already ran for "{search_term}" but returned an error. '
             "Do not ask again for the product category if it is already known. "
+            "Do not claim that this product exists in the catalog. "
             "Ask only for a narrower model, variant, or item type."
         )
     items = result.get("items")
     if not isinstance(items, list) or not items:
         return (
             f'Runtime catalog lookup already ran for "{search_term}" and found no exact matches. '
+            "Do not claim that this product family exists in the catalog or is available. "
             "Ask for a narrower model, variant, or item type. "
             "Do not re-ask for quantity or UOM when they are already known."
         )

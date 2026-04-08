@@ -285,6 +285,10 @@ def empty_lead_profile() -> dict[str, Any]:
         "catalog_item_code": None,
         "catalog_item_name": None,
         "catalog_candidate_count": 0,
+        "catalog_lookup_query": None,
+        "catalog_lookup_status": "unknown",
+        "catalog_lookup_match_count": 0,
+        "catalog_lookup_at": None,
         "quantity": None,
         "uom": None,
         "requested_items": [],
@@ -502,9 +506,7 @@ def apply_llm_lead_patch(
 
     current_interest = _clean_text(profile.get("product_interest"))
     if current_interest and current_interest != previous_interest:
-        profile["catalog_item_code"] = None
-        profile["catalog_item_name"] = None
-        profile["catalog_candidate_count"] = 0
+        _reset_catalog_lookup_state(profile)
     _set_product_resolution_state(profile)
     return profile
 
@@ -810,6 +812,16 @@ def _set_product_resolution_state(profile: dict[str, Any]) -> dict[str, Any]:
     return profile
 
 
+def _reset_catalog_lookup_state(profile: dict[str, Any]) -> None:
+    profile["catalog_item_code"] = None
+    profile["catalog_item_name"] = None
+    profile["catalog_candidate_count"] = 0
+    profile["catalog_lookup_query"] = None
+    profile["catalog_lookup_status"] = "unknown"
+    profile["catalog_lookup_match_count"] = 0
+    profile["catalog_lookup_at"] = None
+
+
 def _first_number(*values: Any) -> float | None:
     for value in values:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -1077,9 +1089,7 @@ def update_lead_profile_from_message(
         profile["requested_items_uom_assumption_status"] = "confirmed" if not profile["requested_items_need_uom_confirmation"] else "likely"
         if product_summary:
             profile["product_interest"] = product_summary
-            profile["catalog_item_code"] = None
-            profile["catalog_item_name"] = None
-            profile["catalog_candidate_count"] = 0
+            _reset_catalog_lookup_state(profile)
         if normalized_text and not profile.get("need"):
             profile["need"] = normalized_text
     elif profile.get("requested_items") and profile.get("requested_items_need_uom_confirmation"):
@@ -1098,9 +1108,7 @@ def update_lead_profile_from_message(
         normalized_interest = _normalize_single_item_interest(normalized_text, lead_config) or normalized_text
         profile["product_interest"] = normalized_interest
         profile["need"] = profile.get("need") or normalized_interest
-        profile["catalog_item_code"] = None
-        profile["catalog_item_name"] = None
-        profile["catalog_candidate_count"] = 0
+        _reset_catalog_lookup_state(profile)
     if resolved_intent == "order_detail" and normalized_text and not profile.get("need"):
         profile["need"] = normalized_text
 
@@ -1208,6 +1216,8 @@ def update_lead_profile_from_tool(
     if tool_name == "get_product_catalog":
         interest = _clean_text(inputs.get("item_name") or inputs.get("item_group"))
         items = tool_result.get("items") if isinstance(tool_result, dict) else None
+        profile["catalog_lookup_query"] = interest
+        profile["catalog_lookup_at"] = resolved_now.isoformat()
         if not interest and isinstance(items, list) and items and isinstance(items[0], dict):
             interest = _clean_text(items[0].get("item_name") or items[0].get("display_item_name"))
         if interest:
@@ -1215,6 +1225,8 @@ def update_lead_profile_from_tool(
             profile["need"] = profile.get("need") or interest
         if isinstance(items, list):
             profile["catalog_candidate_count"] = len(items)
+            profile["catalog_lookup_match_count"] = len(items)
+            profile["catalog_lookup_status"] = "found" if items else "no_match"
             if len(items) == 1 and isinstance(items[0], dict):
                 profile["catalog_item_code"] = _clean_text(items[0].get("item_code"), limit=64)
                 profile["catalog_item_name"] = _clean_text(
@@ -1224,6 +1236,12 @@ def update_lead_profile_from_tool(
             elif len(items) > 1:
                 profile["catalog_item_code"] = None
                 profile["catalog_item_name"] = None
+            else:
+                profile["catalog_item_code"] = None
+                profile["catalog_item_name"] = None
+        else:
+            profile["catalog_lookup_status"] = "error" if tool_result.get("error") else "unknown"
+            profile["catalog_lookup_match_count"] = 0
 
     items = inputs.get("items")
     if isinstance(items, list) and items:

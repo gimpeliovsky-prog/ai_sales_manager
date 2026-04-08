@@ -1219,10 +1219,16 @@ def run_agent_runtime_evals() -> list[str]:
     ):
         failures.append("agent_prefetch_disabled_for_specific_item: expected False")
     if should_prefetch_catalog_options(
-        lead_profile={"product_interest": "backpacks", "product_resolution_status": "broad", "next_action": "ask_unit"},
+        lead_profile={
+            "product_interest": "backpacks",
+            "product_resolution_status": "broad",
+            "next_action": "ask_unit",
+            "catalog_lookup_query": None,
+            "catalog_lookup_status": "unknown",
+        },
         intent="browse_catalog",
-    ):
-        failures.append("agent_prefetch_disabled_without_option_selection_state: expected False")
+    ) is not True:
+        failures.append("agent_prefetch_enabled_for_unresolved_broad_product: expected True")
 
     context = build_catalog_prefetch_context(
         {
