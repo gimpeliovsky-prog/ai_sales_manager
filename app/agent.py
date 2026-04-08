@@ -14,6 +14,7 @@ from app.i18n import text as i18n_text
 from app.interaction_patterns import has_explicit_confirmation
 from app.language_policy import resolve_conversation_language
 from app.lead_management import (
+    apply_llm_lead_patch,
     build_lead_event_payload,
     build_handoff_summary,
     ensure_lead_identity,
@@ -26,6 +27,7 @@ from app.lead_management import (
     update_lead_profile_from_tool,
 )
 from app.license_client import get_license_client
+from app.llm_state_updater import parse_llm_state_update
 from app.outbound_channels import mark_sales_owner_notification, notify_sales_owner
 from app.prompt_registry import build_runtime_system_prompt
 from app.runtime_catalog_context import build_catalog_prefetch_context, catalog_prefetch_search_term, should_prefetch_catalog_options
@@ -702,6 +704,21 @@ def _confirmation_classifier_enabled(tenant: dict[str, Any]) -> bool:
     return bool(sales_policy.get("llm_confirmation_classifier_enabled", True))
 
 
+def _state_updater_enabled(tenant: dict[str, Any]) -> bool:
+    ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
+    sales_policy = ai_policy.get("sales_policy") if isinstance(ai_policy.get("sales_policy"), dict) else {}
+    return bool(sales_policy.get("llm_state_updater_enabled", False))
+
+
+def _state_updater_min_confidence(tenant: dict[str, Any]) -> float:
+    ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
+    sales_policy = ai_policy.get("sales_policy") if isinstance(ai_policy.get("sales_policy"), dict) else {}
+    try:
+        return max(0.5, min(0.99, float(sales_policy.get("llm_state_updater_min_confidence", 0.7) or 0.7)))
+    except (TypeError, ValueError):
+        return 0.7
+
+
 def _confirmation_min_confidence(tenant: dict[str, Any]) -> float:
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
     sales_policy = ai_policy.get("sales_policy") if isinstance(ai_policy.get("sales_policy"), dict) else {}
@@ -731,6 +748,68 @@ def _parse_confirmation_classifier_response(text: str) -> dict[str, Any]:
         "confidence": max(0.0, min(1.0, confidence)),
         "reason": _preview_text(str(payload.get("reason") or "")),
     }
+
+
+async def _classify_state_with_llm(
+    *,
+    client: httpx.AsyncClient,
+    api_key: str,
+    model: str,
+    user_text: str,
+    session: dict[str, Any],
+    tenant: dict[str, Any],
+) -> dict[str, Any]:
+    lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    payload = {
+        "model": model,
+        "instructions": (
+            "Classify the customer's latest message for sales-runtime state update. "
+            "Return only compact JSON with keys: intent, behavior_class, confidence, lead_patch, reason. "
+            "intent must be one of: low_signal, find_product, browse_catalog, order_detail, confirm_order, add_to_order, service_request, human_handoff. "
+            "behavior_class must be one of: direct_buyer, explorer, unclear_request, price_sensitive, frustrated, service_request, returning_customer, silent_or_low_signal. "
+            "lead_patch may include only these keys when clearly supported by the message and context: product_interest, quantity, uom, urgency, delivery_need, price_sensitivity, decision_status. "
+            "Do not invent values. Use any customer language. If unsure, keep lead_patch empty and lower confidence."
+        ),
+        "input": [
+            {
+                "role": "system",
+                "content": json.dumps(
+                    {
+                        "current_stage": session.get("stage"),
+                        "current_intent": session.get("last_intent"),
+                        "current_behavior_class": session.get("behavior_class"),
+                        "customer_identified": bool(session.get("erp_customer_id")),
+                        "active_order_name": session.get("last_sales_order_name"),
+                        "lead_profile": {
+                            "status": lead_profile.get("status"),
+                            "product_interest": lead_profile.get("product_interest"),
+                            "quantity": lead_profile.get("quantity"),
+                            "uom": lead_profile.get("uom"),
+                            "product_resolution_status": lead_profile.get("product_resolution_status"),
+                            "next_action": lead_profile.get("next_action"),
+                            "qualification_priority": lead_profile.get("qualification_priority"),
+                            "price_sensitivity": lead_profile.get("price_sensitivity"),
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+            {"role": "user", "content": user_text},
+        ],
+        "max_output_tokens": 300,
+    }
+    response = await client.post(
+        "https://api.openai.com/v1/responses",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+    )
+    response.raise_for_status()
+    result = parse_llm_state_update(_extract_output_text(response.json()))
+    result["source"] = "llm"
+    return result
 
 
 async def _classify_order_confirmation_with_llm(
@@ -931,14 +1010,54 @@ async def process_message_result(
 
     active_order_name = session.get("last_sales_order_name")
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None
-    behavior_class, behavior_confidence = classify_behavior(user_text, session, ai_policy=ai_policy)
-    intent, intent_confidence = classify_intent(user_text, ai_policy=ai_policy)
+    previous_lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    llm_state_result: dict[str, Any] | None = None
+    if _state_updater_enabled(tenant):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as state_client:
+                llm_state_result = await _classify_state_with_llm(
+                    client=state_client,
+                    api_key=settings.openai_api_key,
+                    model=settings.openai_model,
+                    user_text=user_text,
+                    session=session,
+                    tenant=tenant,
+                )
+        except Exception as exc:
+            logger.warning("LLM state updater failed: %s", exc)
+            llm_state_result = {"valid": False, "reason": str(exc), "source": "error"}
+
+    seeded_profile = previous_lead_profile
+    use_llm_state = (
+        isinstance(llm_state_result, dict)
+        and llm_state_result.get("valid")
+        and float(llm_state_result.get("confidence") or 0) >= _state_updater_min_confidence(tenant)
+    )
+    if use_llm_state:
+        seeded_profile = apply_llm_lead_patch(
+            current_profile=previous_lead_profile,
+            patch=llm_state_result.get("lead_patch") if isinstance(llm_state_result.get("lead_patch"), dict) else {},
+            lead_config=_lead_management_config(tenant),
+        )
+
+    fallback_behavior_class, fallback_behavior_confidence = classify_behavior(user_text, session, ai_policy=ai_policy)
+    fallback_intent, fallback_intent_confidence = classify_intent(user_text, ai_policy=ai_policy)
+    behavior_class = str(llm_state_result.get("behavior_class") or "") if use_llm_state else ""
+    intent = str(llm_state_result.get("intent") or "") if use_llm_state else ""
+    llm_confidence = float(llm_state_result.get("confidence") or 0) if use_llm_state else 0.0
+    behavior_confidence = llm_confidence if behavior_class else fallback_behavior_confidence
+    intent_confidence = llm_confidence if intent else fallback_intent_confidence
+    if not behavior_class:
+        behavior_class = fallback_behavior_class
+        behavior_confidence = fallback_behavior_confidence
+    if not intent:
+        intent = fallback_intent
+        intent_confidence = fallback_intent_confidence
     if behavior_class == "silent_or_low_signal" and intent == "find_product":
         intent = "low_signal"
         intent_confidence = max(intent_confidence, behavior_confidence)
-    previous_lead_profile = normalize_lead_profile(session.get("lead_profile"))
     session["lead_profile"] = update_lead_profile_from_message(
-        current_profile=previous_lead_profile,
+        current_profile=seeded_profile,
         user_text=user_text,
         stage=session.get("stage"),
         behavior_class=behavior_class,

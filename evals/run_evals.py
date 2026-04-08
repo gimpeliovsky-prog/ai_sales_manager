@@ -18,6 +18,7 @@ from app.i18n import text as i18n_text  # noqa: E402
 from app.interaction_patterns import has_explicit_confirmation  # noqa: E402
 from app.language_policy import resolve_conversation_language  # noqa: E402
 from app.lead_management import (  # noqa: E402
+    apply_llm_lead_patch,
     build_handoff_summary,
     can_send_followup,
     apply_sales_owner_action,
@@ -36,6 +37,7 @@ from app.lead_management import (  # noqa: E402
     update_lead_profile_from_tool,
     update_lead_profile_source,
 )
+from app.llm_state_updater import parse_llm_state_update  # noqa: E402
 from app.outbound_channels import build_followup_message, build_sales_owner_message, mark_followup_attempt  # noqa: E402
 from app.prompt_registry import build_runtime_system_prompt  # noqa: E402
 from app.runtime_catalog_context import build_catalog_prefetch_context, should_prefetch_catalog_options  # noqa: E402
@@ -438,13 +440,15 @@ def run_lead_management_evals() -> list[str]:
     expected = {
         "status": "quote_needed",
         "temperature": "warm",
-        "next_action": "ask_unit",
-        "followup_strategy": "uom_confirmation",
+        "next_action": "show_matching_options",
+        "followup_strategy": "product_selection_missing",
         "quantity": 5.0,
         "price_sensitivity": True,
         "urgency": "soon",
     }
     failures.extend(_assert_subset(profile, expected, "lead_profile_hot_inbound"))
+    if profile.get("product_interest") != "coffee machines":
+        failures.append(f"lead_profile_hot_inbound_product_interest_cleaned: got {profile.get('product_interest')!r}")
     if not profile.get("created_at") or not profile.get("quote_needed_at"):
         failures.append(f"lead_lifecycle_timestamps_set: got {profile!r}")
     event_type = sales_event_type(previous_profile, profile)
@@ -479,8 +483,8 @@ def run_lead_management_evals() -> list[str]:
     failures.extend(
         _assert_subset(
             missing_quantity_profile,
-            {"qualification_priority": "quantity", "next_action": "ask_quantity"},
-            "qualification_priority_quantity_second",
+            {"qualification_priority": "specific_item_selection", "next_action": "select_specific_item"},
+            "qualification_priority_specific_item_before_quantity_for_broad_product",
         )
     )
     missing_unit_profile = update_lead_profile_from_message(
@@ -495,8 +499,8 @@ def run_lead_management_evals() -> list[str]:
     failures.extend(
         _assert_subset(
             missing_unit_profile,
-            {"qualification_priority": "unit_or_variant", "next_action": "ask_unit"},
-            "qualification_priority_unit_third",
+            {"qualification_priority": "specific_item_selection", "next_action": "select_specific_item"},
+            "qualification_priority_specific_item_before_unit_for_broad_product",
         )
     )
     multi_item_profile = update_lead_profile_from_message(
@@ -603,8 +607,8 @@ def run_lead_management_evals() -> list[str]:
     failures.extend(
         _assert_subset(
             missing_timing_profile,
-            {"qualification_priority": "timing_or_delivery", "next_action": "ask_delivery_timing"},
-            "qualification_priority_delivery_before_confirmation",
+            {"qualification_priority": "specific_item_selection", "next_action": "select_specific_item"},
+            "qualification_priority_specific_item_before_delivery_for_broad_product",
         )
     )
     generic_product_selection_profile = update_lead_profile_from_message(
@@ -701,8 +705,8 @@ def run_lead_management_evals() -> list[str]:
     failures.extend(
         _assert_subset(
             preserve_product_on_uom_reply,
-            {"product_interest": "backpack", "uom": "piece", "next_action": "ask_quantity"},
-            "single_item_uom_reply_does_not_replace_product_interest",
+            {"product_interest": "backpack", "uom": "piece", "next_action": "select_specific_item"},
+            "single_item_uom_reply_preserves_product_interest_and_keeps_item_selection_first",
         )
     )
     preserve_product_on_qty_uom_reply = update_lead_profile_from_message(
@@ -1245,6 +1249,59 @@ def run_agent_runtime_evals() -> list[str]:
     return failures
 
 
+def run_llm_state_updater_evals() -> list[str]:
+    failures: list[str] = []
+    parsed = parse_llm_state_update(
+        json.dumps(
+            {
+                "intent": "browse_catalog",
+                "behavior_class": "explorer",
+                "confidence": 0.86,
+                "lead_patch": {
+                    "product_interest": "travel backpacks",
+                    "quantity": 5,
+                    "uom": "pcs",
+                    "price_sensitivity": False,
+                },
+                "reason": "Customer asks to see backpack options and gives quantity/unit.",
+            },
+            ensure_ascii=False,
+        )
+    )
+    failures.extend(
+        _assert_subset(
+            parsed,
+            {
+                "valid": True,
+                "intent": "browse_catalog",
+                "behavior_class": "explorer",
+            },
+            "llm_state_updater_parses_valid_response",
+        )
+    )
+    patched_profile = apply_llm_lead_patch(
+        current_profile={"product_interest": "backpack", "catalog_item_code": "BP-1", "catalog_item_name": "Old Backpack"},
+        patch=parsed.get("lead_patch"),
+    )
+    failures.extend(
+        _assert_subset(
+            patched_profile,
+            {
+                "product_interest": "travel backpacks",
+                "quantity": 5.0,
+                "uom": "piece",
+                "catalog_item_code": None,
+                "catalog_item_name": None,
+            },
+            "llm_state_updater_patch_resets_catalog_selection_when_interest_changes",
+        )
+    )
+    invalid = parse_llm_state_update('{"intent":"made_up","behavior_class":"unknown","lead_patch":{"quantity":"x"}}')
+    if invalid.get("valid"):
+        failures.append(f"llm_state_updater_rejects_invalid_values: got {invalid!r}")
+    return failures
+
+
 def run_sales_dedupe_evals() -> list[str]:
     failures: list[str] = []
     now = datetime.now(UTC)
@@ -1585,6 +1642,7 @@ def main() -> int:
     failures.extend(run_uom_semantics_evals())
     failures.extend(run_lead_management_evals())
     failures.extend(run_agent_runtime_evals())
+    failures.extend(run_llm_state_updater_evals())
     failures.extend(run_sales_dedupe_evals())
     failures.extend(run_sales_reporting_evals())
     failures.extend(run_sales_governance_evals())

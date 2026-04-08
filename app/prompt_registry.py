@@ -39,6 +39,7 @@ CATALOG_POLICY: list[str] = [
     "If a catalog tool result has price_display_blocked=true, do not state a price or rate; ask for the missing product, quantity, or UOM shown in price_anchor.missing.",
     "If the requested UOM is unclear or unavailable, clarify before creating or updating an order.",
     "Do not ask again for product, quantity, or UOM if the lead profile already contains them.",
+    "When the customer named only a broad product category and the exact catalog item is still unknown, resolve or show matching options before asking for quantity or UOM.",
     "If product_resolution_status is broad and next_action is show_matching_options, call the catalog tool for the known product_interest and offer two or three matching items or variants.",
     "If product_resolution_status is broad and next_action is select_specific_item, ask only for the exact model or variant; do not ask the customer to repeat the product category or confirmed UOM.",
     "Do not expose internal field names such as stock_uom, available_uoms, non_stock_uoms, or conversion_factor.",
@@ -61,6 +62,7 @@ SERVICE_POLICY: list[str] = [
 SALES_PLAYBOOK: list[str] = [
     "Use this inbound-sales sequence: acknowledge the request, understand the need, recommend a concrete next step, confirm order details, then execute only after explicit confirmation.",
     "For new inbound leads, create value before asking for more data: answer the specific product question when tool-backed data is available, then ask for only the missing contact or order detail needed next.",
+    "For category-first conversations where the customer names only a broad item like a product family or category, first show relevant options or resolve the exact item, then collect quantity and unit details.",
     "Qualify naturally without interrogating: product or service need, quantity and unit, relevant constraints, urgency, and delivery or billing needs only when needed for the next step.",
     "When clarifying, follow this priority order: first product/need, then quantity, then unit/package/variant, then timing or delivery need when needed for order confirmation, then contact details, then confirmation.",
     "Ask exactly one missing detail from the current qualification_priority; do not skip ahead to lower-priority details unless the customer already provided the higher-priority ones.",

@@ -52,6 +52,17 @@ _GENERIC_PRODUCT_TOKENS = {
     "ما", "أي", "عندكم", "اعرض", "أرني", "خيارات", "خيار", "منتج", "منتجات", "صنف", "اصناف",
     "موديل", "موديلات", "نوع", "أنواع", "اسم", "دقيق", "لا", "اعرف",
 }
+_PRODUCT_INTEREST_NOISE_TERMS = [
+    "price", "prices", "cost", "costs", "quote", "quotation", "discount", "discounts",
+    "urgent", "asap", "today", "tomorrow", "fast", "soon", "delivery", "deliver", "shipping", "ship",
+    "please", "pls",
+    "цена", "цены", "стоимость", "скидка", "скидки", "кп", "срочно", "сегодня", "завтра", "быстро", "доставка",
+    "пожалуйста",
+    "מחיר", "מחירים", "הנחה", "הצעת", "הצעת מחיר", "דחוף", "היום", "מחר", "מהר", "משלוח",
+    "בבקשה",
+    "سعر", "الاسعار", "السعر", "خصم", "عرض سعر", "عاجل", "اليوم", "غدا", "توصيل", "شحن",
+    "من فضلك", "رجاء",
+]
 
 
 def normalize_telegram_username(username: Any) -> str:
@@ -456,6 +467,48 @@ def update_lead_profile_source(
     return profile
 
 
+def apply_llm_lead_patch(
+    *,
+    current_profile: Any,
+    patch: dict[str, Any] | None,
+    lead_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    profile = normalize_lead_profile(current_profile)
+    if not isinstance(patch, dict) or not patch:
+        return profile
+
+    previous_interest = _clean_text(profile.get("product_interest"))
+    if "product_interest" in patch:
+        normalized_interest = _normalize_single_item_interest(patch.get("product_interest"), lead_config) or _clean_text(patch.get("product_interest"))
+        if normalized_interest:
+            profile["product_interest"] = normalized_interest
+            profile["need"] = profile.get("need") or normalized_interest
+    if "quantity" in patch:
+        quantity = _first_number(patch.get("quantity"))
+        if quantity is not None:
+            profile["quantity"] = quantity
+    if "uom" in patch:
+        resolved_uom = canonical_uom(patch.get("uom"), _uom_config(lead_config, "single_item_uom_terms")) or _clean_text(patch.get("uom"), limit=40)
+        if resolved_uom:
+            profile["uom"] = resolved_uom
+    if "urgency" in patch and _clean_text(patch.get("urgency"), limit=40):
+        profile["urgency"] = _clean_text(patch.get("urgency"), limit=40)
+    if "delivery_need" in patch and _clean_text(patch.get("delivery_need"), limit=80):
+        profile["delivery_need"] = _clean_text(patch.get("delivery_need"), limit=80)
+    if "price_sensitivity" in patch:
+        profile["price_sensitivity"] = bool(patch.get("price_sensitivity"))
+    if "decision_status" in patch and _clean_text(patch.get("decision_status"), limit=40):
+        profile["decision_status"] = _clean_text(patch.get("decision_status"), limit=40)
+
+    current_interest = _clean_text(profile.get("product_interest"))
+    if current_interest and current_interest != previous_interest:
+        profile["catalog_item_code"] = None
+        profile["catalog_item_name"] = None
+        profile["catalog_candidate_count"] = 0
+    _set_product_resolution_state(profile)
+    return profile
+
+
 def _clean_text(value: Any, *, limit: int = 160) -> str | None:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     if not text:
@@ -501,6 +554,17 @@ def _single_item_uom_terms(config: dict[str, Any] | None) -> dict[str, list[str]
     return uom_aliases(_uom_config(config, "single_item_uom_terms"))
 
 
+def _strip_product_interest_noise(text: str, config: dict[str, Any] | None) -> str:
+    normalized = str(text or "")
+    dynamic_terms: list[str] = []
+    for signal in ("urgency", "delivery", "quote"):
+        dynamic_terms.extend(_configured_terms(config, signal))
+    terms = [term for term in [*_PRODUCT_INTEREST_NOISE_TERMS, *dynamic_terms] if str(term or "").strip()]
+    for term in sorted({str(term).strip() for term in terms}, key=len, reverse=True):
+        normalized = re.sub(rf"(?<!\w){re.escape(term)}(?!\w)", " ", normalized, flags=re.IGNORECASE)
+    return normalized
+
+
 def _extract_single_item_uom(text: str, config: dict[str, Any] | None) -> str | None:
     normalized = (text or "").casefold()
     if not normalized:
@@ -533,6 +597,7 @@ def _normalize_single_item_interest(text: str, config: dict[str, Any] | None) ->
             clean_term = str(term or "").strip()
             if clean_term:
                 normalized = re.sub(rf"(?<!\w){re.escape(clean_term)}(?!\w)", " ", normalized, flags=re.IGNORECASE)
+    normalized = _strip_product_interest_noise(normalized, config)
     normalized = re.sub(r"\s+", " ", normalized).strip(" ,.;:-")
     return _clean_text(normalized, limit=160)
 
@@ -730,6 +795,10 @@ def _has_specific_item_selection(profile: dict[str, Any]) -> bool:
     return bool(profile.get("requested_items"))
 
 
+def _needs_specific_item_selection(profile: dict[str, Any]) -> bool:
+    return profile.get("product_resolution_status") == "broad" and not _has_specific_item_selection(profile)
+
+
 def _set_product_resolution_state(profile: dict[str, Any]) -> dict[str, Any]:
     if _has_specific_item_selection(profile):
         profile["product_resolution_status"] = "specific"
@@ -841,16 +910,18 @@ def _next_action_for(*, status: str, stage: str, intent: str, profile: dict[str,
         return "fulfill_service_request"
     if not profile.get("product_interest"):
         return "ask_need"
+    if _needs_specific_item_selection(profile):
+        if intent == "browse_catalog" or (
+            stage in {"discover", "lead_capture"} and not _has_quantity_detail(profile) and not _has_unit_detail(profile)
+        ):
+            return "show_matching_options"
+        return "select_specific_item"
     if not _has_quantity_detail(profile):
         return "ask_quantity"
     if not _has_unit_detail(profile):
         return "ask_unit"
     if stage in {"order_build", "confirm"} and not (profile.get("urgency") or profile.get("delivery_need")):
         return "ask_delivery_timing"
-    if not _has_specific_item_selection(profile):
-        if intent == "browse_catalog":
-            return "show_matching_options"
-        return "select_specific_item"
     if not customer_identified:
         return "ask_contact"
     if status == "quote_needed":
@@ -863,14 +934,14 @@ def _next_action_for(*, status: str, stage: str, intent: str, profile: dict[str,
 def _qualification_priority_for(*, status: str, stage: str, profile: dict[str, Any], customer_identified: bool) -> tuple[str, str]:
     if not profile.get("product_interest"):
         return "product_need", "Clarify what the customer wants before asking for commercial parameters."
+    if _needs_specific_item_selection(profile):
+        return "specific_item_selection", "When the customer named only a broad category, first resolve the exact catalog item or show matching options before collecting more commercial parameters."
     if not _has_quantity_detail(profile):
         return "quantity", "After the product is known, quantity is the next most important sales qualification detail."
     if not _has_unit_detail(profile):
         return "unit_or_variant", "After quantity, clarify unit, package, or variant so price and order details are meaningful."
     if stage in {"order_build", "confirm"} and not (profile.get("urgency") or profile.get("delivery_need")):
         return "timing_or_delivery", "Before final order confirmation, clarify timing or delivery needs when they are still missing."
-    if not _has_specific_item_selection(profile):
-        return "specific_item_selection", "After product, quantity, and unit are known, resolve the exact catalog item or variant before contact or final confirmation."
     if not customer_identified:
         return "contact", "Ask for contact only after product and core order parameters are clear."
     if status == "quote_needed":
