@@ -61,6 +61,7 @@ def evaluate_tool_call(
     has_items = isinstance(inputs.get("items"), list) and bool(inputs.get("items"))
     lead_profile = session.get("lead_profile") if isinstance(session.get("lead_profile"), dict) else {}
     needs_multi_item_uom_confirmation = bool(lead_profile.get("requested_items_need_uom_confirmation"))
+    separate_order_requested = bool(lead_profile.get("separate_order_requested"))
 
     if tool_name == "get_product_catalog":
         return None
@@ -108,7 +109,7 @@ def evaluate_tool_call(
                 "Cannot create a sales order before the buyer is identified.",
                 "Identify or register the buyer first.",
             )
-        if stage not in {"order_build", "confirm"}:
+        if stage not in {"order_build", "confirm"} and not (separate_order_requested and stage in {"invoice", "service", "closed"}):
             return _deny(
                 tool_name,
                 f"Sales order creation is not allowed from stage '{stage or 'unknown'}'.",
@@ -154,6 +155,12 @@ def evaluate_tool_call(
                 tool_name,
                 "Cannot update a sales order before the buyer is identified.",
                 "Identify the buyer first.",
+            )
+        if separate_order_requested:
+            return _deny(
+                tool_name,
+                "The customer asked for a separate new order, not a change to the current order.",
+                "Create a new sales order instead of updating the current one.",
             )
         if not (requested_order_name or active_order_name):
             return _deny(

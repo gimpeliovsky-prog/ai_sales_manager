@@ -1116,9 +1116,10 @@ def _build_confirmation_fallback_call(*, session: dict[str, Any], user_text: str
     if not has_explicit_confirmation(user_text):
         return None
     lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    separate_order_requested = bool(lead_profile.get("separate_order_requested"))
     next_action = str(lead_profile.get("next_action") or "").strip()
     stage = str(session.get("stage") or "").strip()
-    if next_action != "confirm_order" and stage not in {"order_build", "confirm"}:
+    if next_action != "confirm_order" and stage not in {"order_build", "confirm"} and not separate_order_requested:
         return None
     if lead_profile.get("requested_items_need_uom_confirmation"):
         return None
@@ -1140,7 +1141,7 @@ def _build_confirmation_fallback_call(*, session: dict[str, Any], user_text: str
     active_order_name = str(session.get("last_sales_order_name") or "").strip()
     correction_requested = str(lead_profile.get("order_correction_status") or "").strip() == "requested"
     last_intent = str(session.get("last_intent") or "").strip()
-    if active_order_name and (last_intent == "add_to_order" or correction_requested or stage in {"invoice", "service", "closed"}):
+    if active_order_name and not separate_order_requested and (last_intent == "add_to_order" or correction_requested or stage in {"invoice", "service", "closed"}):
         return None
     inputs = {"items": items}
     tool_name = "create_sales_order"
@@ -1292,6 +1293,7 @@ async def _classify_state_with_llm(
             "Use next_action to express the single best next sales step after this message. "
             "Prefer show_matching_options or select_specific_item when the customer named only a broad product and asks what exists. "
             "Do not ask again for quantity or UOM when they are already known in the lead profile unless the customer changes them. "
+            "If there is an active order and the customer explicitly asks for a new or separate order, do not treat that as add_to_order. "
             "Do not invent values. Use any customer language. If unsure, keep lead_patch empty, next_action empty, and lower confidence."
         ),
         "input": [

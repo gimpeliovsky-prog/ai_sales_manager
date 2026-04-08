@@ -156,6 +156,7 @@ def empty_lead_profile() -> dict[str, Any]:
         "active_order_state": None,
         "active_order_can_modify": None,
         "active_order_checked_at": None,
+        "separate_order_requested": False,
         "order_correction_status": "none",
         "target_order_id": None,
         "correction_type": None,
@@ -216,6 +217,7 @@ def normalize_lead_profile(raw_profile: Any) -> dict[str, Any]:
         profile["requested_items_assumed_uom"] = "box"
     if profile.get("requested_items_assumed_uom") and not profile.get("requested_items_uom_assumption_status"):
         profile["requested_items_uom_assumption_status"] = "likely" if profile.get("requested_items_need_uom_confirmation") else "confirmed"
+    profile["separate_order_requested"] = bool(profile.get("separate_order_requested"))
     try:
         profile["followup_count"] = max(0, int(profile.get("followup_count") or 0))
     except (TypeError, ValueError):
@@ -547,6 +549,8 @@ def _should_replace_product_interest(
 def _order_correction_requested(*, user_text: str, intent: str, active_order_name: str | None, config: dict[str, Any] | None) -> bool:
     if not active_order_name:
         return False
+    if _signal_matches(user_text, "new_order", config):
+        return False
     if intent == "add_to_order":
         return True
     if _signal_matches(user_text, "order_correction", config):
@@ -764,17 +768,18 @@ def _score_profile(*, profile: dict[str, Any], customer_identified: bool, stage:
 
 
 def _status_for(*, stage: str, intent: str, profile: dict[str, Any], active_order_name: str | None) -> str:
+    separate_order_requested = bool(profile.get("separate_order_requested"))
     if profile.get("lost_reason"):
         return "lost"
     if stage == "handoff":
         return "handoff"
     if stage == "service" or intent == "service_request":
         return "service"
-    if stage == "closed" and active_order_name:
+    if stage == "closed" and active_order_name and not separate_order_requested:
         return "won"
     if profile.get("quote_status") == "requested":
         return "quote_needed"
-    if active_order_name or stage == "invoice":
+    if (active_order_name or stage == "invoice") and not separate_order_requested:
         return "order_created"
     if stage == "confirm" or intent == "confirm_order":
         return "order_ready"
@@ -992,11 +997,13 @@ def update_lead_profile_from_message(
         active_order_name=active_order_name,
         config=lead_config,
     )
+    separate_order_requested = bool(active_order_name and _signal_matches(user_text, "new_order", lead_config))
     preserve_order_service_anchor = bool(
         active_order_name
         and resolved_stage in {"invoice", "service", "closed"}
         and resolved_intent in {"service_request", "low_signal", "order_detail"}
         and not correction_requested
+        and not separate_order_requested
     )
     product_resolution_intent = resolved_intent
     if correction_requested and resolved_intent in {"service_request", "low_signal", "order_detail"}:
@@ -1042,6 +1049,14 @@ def update_lead_profile_from_message(
         _reset_catalog_lookup_state(profile)
     if resolved_intent == "order_detail" and normalized_text and not profile.get("need"):
         profile["need"] = normalized_text
+
+    if separate_order_requested:
+        profile["separate_order_requested"] = True
+        profile["order_correction_status"] = "none"
+        profile["target_order_id"] = None
+        profile["correction_type"] = None
+    elif correction_requested:
+        profile["separate_order_requested"] = False
 
     if qty is not None and not requested_items:
         profile["quantity"] = qty
@@ -1090,6 +1105,8 @@ def update_lead_profile_from_message(
         profile["correction_type"] = profile.get("correction_type") or _correction_type(user_text)
         profile["correction_requested_at"] = profile.get("correction_requested_at") or resolved_now.isoformat()
         profile["next_action"] = "clarify_order_correction"
+    elif separate_order_requested:
+        profile["next_action"] = "confirm_order" if _has_quantity_detail(profile) and _has_unit_detail(profile) else "ask_unit" if _has_quantity_detail(profile) else "ask_quantity"
     if profile.get("status") == "stalled" and not profile.get("lost_reason"):
         profile["status"] = profile.get("previous_status_before_stall") or "new_lead"
         profile["previous_status_before_stall"] = None
@@ -1248,6 +1265,7 @@ def update_lead_profile_from_tool(
         profile["status"] = "won"
     if tool_name == "create_sales_order" and tool_result.get("name"):
         profile["target_order_id"] = _clean_text(tool_result.get("name"), limit=120) or profile.get("target_order_id")
+        profile["separate_order_requested"] = False
         profile["order_correction_status"] = "none"
         profile["active_order_state"] = "draft"
         profile["active_order_can_modify"] = True
@@ -1265,6 +1283,7 @@ def update_lead_profile_from_tool(
         profile["won_revenue"] = profile.get("order_total")
     if tool_name == "update_sales_order" and tool_result.get("name"):
         profile["target_order_id"] = _clean_text(tool_result.get("name"), limit=120) or profile.get("target_order_id")
+        profile["separate_order_requested"] = False
         profile["order_correction_status"] = "none"
         profile["correction_applied_at"] = resolved_now.isoformat()
         profile["active_order_state"] = "draft"

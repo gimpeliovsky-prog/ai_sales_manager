@@ -54,6 +54,7 @@ ORDER_POLICY: list[str] = [
     "When the buyer has prior sales history, use that context to recognize returning purchase patterns without inventing facts.",
     "If there is an active draft order and the customer wants to add more items, update that order instead of creating a new one.",
     "Do not claim that the current order is locked, not editable, or cannot be modified unless an order-status tool result in this conversation confirms active_order_can_modify=false.",
+    "If the customer explicitly asks for a new or separate order, do not update the current active order; start a new order flow instead.",
     "If the customer asks to send the current order, send the order PDF and do not create an invoice instead.",
     "When next_action is confirm_order and the customer explicitly confirms, call create_sales_order or update_sales_order immediately instead of asking for confirmation again.",
     "For draft-order corrections, a direct customer instruction with the requested change is already sufficient confirmation. Messages such as 'add 7 t-shirts', 'change book quantity to 10', or 'remove backpack from the order' must not trigger a ritual confirmation request.",
@@ -258,6 +259,8 @@ def _lead_state_guard_lines(lead_profile: dict[str, Any] | None) -> list[str]:
         lines.append(f"Known quantity is already {quantity}. Do not ask for quantity again unless the customer changes it.")
     if uom and not lead_profile.get("requested_items_need_uom_confirmation"):
         lines.append(f"Known unit is already {uom}. Do not ask for unit or package again unless the customer changes it.")
+    if lead_profile.get("separate_order_requested"):
+        lines.append("The customer explicitly asked for a separate new order. Do not update the current active order; build or confirm a new order instead.")
     next_action = str(lead_profile.get("next_action") or "")
     if next_action == "show_matching_options":
         lines.append("The next step is to show matching catalog options, not to ask again for already known product, quantity, or unit details.")

@@ -251,11 +251,16 @@ def _derive_stage_from_state(
     previous_stage = str(session.get("stage") or "")
     status = str(lead_profile.get("status") or "none")
     next_action = str(lead_profile.get("next_action") or "")
+    separate_order_requested = bool(lead_profile.get("separate_order_requested"))
 
     if intent == "human_handoff":
         return "handoff", 0.98
     if status == "service" or intent == "service_request":
         return "service", 0.95
+    if separate_order_requested:
+        if next_action in {"ask_quantity", "ask_unit", "ask_delivery_timing", "confirm_order"} or lead_profile.get("product_interest"):
+            return "order_build", 0.92
+        return "discover", 0.84
     if status in {"order_created", "won"}:
         return ("closed", 0.93) if previous_stage == "closed" else ("invoice", 0.93)
     if status == "handoff":

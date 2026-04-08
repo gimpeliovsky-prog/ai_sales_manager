@@ -355,5 +355,36 @@
       "handoff_required": true,
       "handoff_reason": "customer_requested_human"
     }
+  },
+  {
+    "name": "separate_new_order_overrides_existing_invoice_stage",
+    "session": {
+      "stage": "invoice",
+      "erp_customer_id": "CUST-0001"
+    },
+    "user_text": "новый заказ 25 t-shirt",
+    "channel": "telegram",
+    "needs_intro": false,
+    "customer_identified": true,
+    "active_order_name": "SO-123",
+    "behavior_class": "direct_buyer",
+    "behavior_confidence": 0.9,
+    "intent": "find_product",
+    "intent_confidence": 0.8,
+    "lead_profile": {
+      "status": "qualified",
+      "product_interest": "t-shirt",
+      "quantity": 25,
+      "separate_order_requested": true,
+      "next_action": "ask_unit"
+    },
+    "previous_lead_profile": {
+      "status": "order_created"
+    },
+    "expected": {
+      "stage": "order_build",
+      "handoff_required": false,
+      "last_intent": "find_product"
+    }
   }
 ]

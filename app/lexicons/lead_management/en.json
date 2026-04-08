@@ -235,6 +235,11 @@
       "remove item",
       "replace item"
     ],
+    "new_order": [
+      "new order",
+      "separate order",
+      "another order"
+    ],
     "correction_delivery": [
       "date",
       "delivery",
