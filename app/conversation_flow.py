@@ -167,6 +167,11 @@ _HUMAN_RE = re.compile(
 )
 
 
+_CONTACT_DETAILS_RE = re.compile(
+    r"(?is)(?:\b(?:my\s+name\s+is|name\s+is|i\s+am|i'm|tel|phone|mobile|call\s+me)\b|\b[+0]?\d[\d\s().-]{7,}\d\b)"
+)
+
+
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip()).lower()
 
@@ -364,7 +369,8 @@ def derive_conversation_state(
             stage = DEFAULT_STAGE
         stage_confidence = 0.61
     previous_failures = int(session.get("failed_clarification_count") or 0)
-    if stage == "clarify":
+    has_contact_details = bool(_CONTACT_DETAILS_RE.search(user_text or ""))
+    if stage == "clarify" and not has_contact_details:
         failed_clarification_count = previous_failures + 1 if previous_stage == "clarify" else 1
     else:
         failed_clarification_count = 0

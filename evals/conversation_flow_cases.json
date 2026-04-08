@@ -190,5 +190,30 @@
       "handoff_required": false,
       "last_intent": "low_signal"
     }
+  },
+  {
+    "name": "contact_details_do_not_trigger_repeated_clarification_handoff",
+    "session": {
+      "stage": "clarify",
+      "failed_clarification_count": 1
+    },
+    "user_text": "my name is peter tel 0557704571",
+    "channel": "telegram",
+    "needs_intro": true,
+    "customer_identified": false,
+    "active_order_name": null,
+    "ai_policy": {
+      "handoff_rules": {
+        "enabled": true,
+        "allow_customer_requested_handoff": true,
+        "frustrated_customer_handoff": true,
+        "clarification_failure_limit": 2
+      }
+    },
+    "expected": {
+      "handoff_required": false,
+      "handoff_reason": null,
+      "failed_clarification_count": 0
+    }
   }
 ]
