@@ -5,6 +5,7 @@ from typing import Any
 from app.catalog_localization import catalog_lang as _catalog_lang, localize_catalog_result as _localize_catalog_result
 from app.i18n import text as i18n_text
 from app.interaction_patterns import has_add_to_order_intent, has_explicit_confirmation
+from app.lead_management import normalize_catalog_lookup_query
 from app.license_client import LicenseClient
 from app.sales_policy import (
     earliest_delivery_date,
@@ -206,6 +207,24 @@ def _normalize_match_text(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9?-??-???\u0590-\u05FF\u0600-\u06FF]+", " ", text or "").strip().lower()
 
 
+_QUERY_STOPWORDS = {
+    "a", "an", "the", "i", "im", "i'm", "me", "my", "you", "your", "we", "our",
+    "want", "need", "looking", "look", "for", "show", "have", "has", "do", "does",
+    "what", "which", "who", "where", "when", "how", "please", "can", "could", "would",
+    "product", "products", "item", "items", "model", "models", "variant", "variants",
+    "option", "options", "type", "types", "name", "exact", "another", "until", "know",
+    "ok", "okay", "hi", "hello", "hey", "thanks", "thank", "buy", "order",
+}
+
+
+def _query_tokens(text: str | None) -> list[str]:
+    return [
+        token
+        for token in _normalize_match_text(text or "").split()
+        if len(token) >= 3 and token not in _QUERY_STOPWORDS
+    ]
+
+
 def _build_search_candidates(*texts: str | None) -> list[str]:
     candidates: list[str] = []
     for raw_text in texts:
@@ -214,8 +233,8 @@ def _build_search_candidates(*texts: str | None) -> list[str]:
             continue
         if normalized not in candidates:
             candidates.append(normalized)
-        for token in normalized.split():
-            if len(token) >= 3 and token not in candidates:
+        for token in _query_tokens(normalized):
+            if token not in candidates:
                 candidates.append(token)
     return candidates[:6]
 
@@ -246,7 +265,7 @@ def _catalog_item_matches_query(query: str | None, item: dict[str, Any]) -> bool
         return False
     if normalized_query in item_text:
         return True
-    query_tokens = [token for token in normalized_query.split() if len(token) >= 3]
+    query_tokens = _query_tokens(normalized_query)
     item_tokens = [token for token in item_text.split() if len(token) >= 3]
     if not query_tokens or not item_tokens:
         return False
@@ -372,9 +391,12 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
     from app.buyer_resolver import create_buyer_from_intro
 
     if name == "get_product_catalog":
-        item_group = inp.get("item_group")
-        item_name = inp.get("item_name")
-        original_query = item_name or item_group
+        lead_config = ai_policy.get("lead_management") if isinstance(ai_policy, dict) and isinstance(ai_policy.get("lead_management"), dict) else ai_policy
+        raw_item_group = inp.get("item_group")
+        raw_item_name = inp.get("item_name")
+        item_group = normalize_catalog_lookup_query(raw_item_group, lead_config) or raw_item_group
+        item_name = normalize_catalog_lookup_query(raw_item_name, lead_config) or raw_item_name
+        original_query = item_name or item_group or raw_item_name or raw_item_group
         catalog_lang = _catalog_lang(current_lang)
         try:
             result = await lc.get_items(company_code, item_group, item_name, catalog_lang)

@@ -63,6 +63,12 @@ _PRODUCT_INTEREST_NOISE_TERMS = [
     "سعر", "الاسعار", "السعر", "خصم", "عرض سعر", "عاجل", "اليوم", "غدا", "توصيل", "شحن",
     "من فضلك", "رجاء",
 ]
+_PRODUCT_INTEREST_FILLER_TERMS = [
+    "ok", "okay", "hi", "hello", "hey", "thanks", "thank you",
+    "ок", "хорошо", "ладно", "спасибо", "привет", "здравствуйте",
+    "בסדר", "אוקי", "אוקיי", "שלום", "היי", "תודה",
+    "تمام", "اوكي", "مرحبا", "اهلا", "شكرا",
+]
 _CONTACT_PHONE_RE = re.compile(r"(?:\+?\d[\d\s().-]{7,}\d)")
 _CONTACT_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b")
 _CONTACT_INTRO_RE = re.compile(
@@ -597,7 +603,7 @@ def _strip_product_interest_noise(text: str, config: dict[str, Any] | None) -> s
     dynamic_terms: list[str] = []
     for signal in ("urgency", "delivery", "quote"):
         dynamic_terms.extend(_configured_terms(config, signal))
-    terms = [term for term in [*_PRODUCT_INTEREST_NOISE_TERMS, *dynamic_terms] if str(term or "").strip()]
+    terms = [term for term in [*_PRODUCT_INTEREST_NOISE_TERMS, *_PRODUCT_INTEREST_FILLER_TERMS, *dynamic_terms] if str(term or "").strip()]
     for term in sorted({str(term).strip() for term in terms}, key=len, reverse=True):
         normalized = re.sub(rf"(?<!\w){re.escape(term)}(?!\w)", " ", normalized, flags=re.IGNORECASE)
     return normalized
@@ -638,6 +644,19 @@ def _normalize_single_item_interest(text: str, config: dict[str, Any] | None) ->
     normalized = _strip_product_interest_noise(normalized, config)
     normalized = re.sub(r"\s+", " ", normalized).strip(" ,.;:-")
     return _clean_text(normalized, limit=160)
+
+
+def normalize_catalog_lookup_query(text: str | None, config: dict[str, Any] | None = None) -> str | None:
+    semantic = _semantic_message_text(str(text or ""))
+    candidate = _normalize_single_item_interest(semantic or str(text or ""), config)
+    if candidate:
+        return candidate
+    fallback = _strip_product_interest_noise(semantic or str(text or ""), config)
+    fallback = re.sub(_BROWSE_SCAFFOLDING_RE, " ", fallback)
+    fallback = re.sub(r"\b(?:i am looking for|i'm looking for|looking for|i want|want|need)\b", " ", fallback, flags=re.IGNORECASE)
+    fallback = re.sub(r"\b(?:a|an|the)\b", " ", fallback, flags=re.IGNORECASE)
+    fallback = re.sub(r"\s+", " ", fallback).strip(" ,.;:-")
+    return _clean_text(fallback, limit=160)
 
 
 def _same_interest(a: str | None, b: str | None) -> bool:
