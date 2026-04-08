@@ -751,6 +751,137 @@ async def _maybe_prefetch_availability_context(
     return build_availability_prefetch_context(parsed_result if isinstance(parsed_result, dict) else {})
 
 
+async def _maybe_prefetch_order_status_context(
+    *,
+    lc: Any,
+    company_code: str,
+    channel: str,
+    channel_uid: str,
+    current_lang: str,
+    user_text: str,
+    tenant: dict[str, Any],
+    session: dict[str, Any],
+) -> str | None:
+    active_order_name = str(session.get("last_sales_order_name") or "").strip()
+    if not active_order_name:
+        return None
+    lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    stage = str(session.get("stage") or "").strip()
+    intent = str(session.get("last_intent") or "").strip()
+    correction_status = str(lead_profile.get("order_correction_status") or "").strip()
+    should_prefetch = bool(
+        stage in {"invoice", "service", "closed"}
+        and (
+            intent in {"service_request", "add_to_order", "order_detail"}
+            or correction_status == "requested"
+            or lead_profile.get("active_order_can_modify") is None
+        )
+    )
+    if not should_prefetch:
+        return None
+
+    inputs = {"sales_order_name": active_order_name}
+    result_str = await execute_tool(
+        name="get_sales_order_status",
+        inputs=inputs,
+        company_code=company_code,
+        erp_customer_id=session.get("erp_customer_id"),
+        active_sales_order_name=active_order_name,
+        current_lang=current_lang,
+        user_text=user_text,
+        channel=channel,
+        channel_uid=channel_uid,
+        lc=lc,
+        ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
+        lead_profile=lead_profile,
+    )
+    try:
+        parsed_result = json.loads(result_str)
+    except json.JSONDecodeError:
+        parsed_result = {"raw_result": result_str, "error": "invalid_order_status_prefetch_result"}
+
+    previous_tool_lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    session["lead_profile"] = update_lead_profile_from_tool(
+        current_profile=previous_tool_lead_profile,
+        tool_name="get_sales_order_status",
+        inputs=inputs,
+        tool_result=parsed_result if isinstance(parsed_result, dict) else {},
+        stage=session.get("stage"),
+        customer_identified=bool(session.get("erp_customer_id")),
+        active_order_name=active_order_name,
+    )
+    await save_session_snapshot(channel, channel_uid, session)
+    await _emit_sales_event_if_changed(
+        lc=lc,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        session=session,
+        previous_profile=previous_tool_lead_profile,
+        lead_config=_lead_management_config(tenant),
+    )
+
+    summary = _tool_result_summary("get_sales_order_status", parsed_result if isinstance(parsed_result, dict) else {})
+    summary["source"] = "runtime_prefetch"
+    _log_event(
+        "order_status_prefetch_finished",
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        stage=session.get("stage"),
+        summary=summary,
+    )
+    await _emit_control_plane_event(
+        lc=lc,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        event_type="order_status_prefetch_finished",
+        payload={
+            "tool_name": "get_sales_order_status",
+            "stage": session.get("stage"),
+            "lead_profile": session.get("lead_profile"),
+            **summary,
+        },
+    )
+    append_lead_timeline_event(
+        session,
+        event_type="order_status_prefetch_finished",
+        payload=summary,
+    )
+    await _emit_transcript_message(
+        lc=lc,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        session=session,
+        role="tool",
+        message_type="tool_prefetch",
+        tool_name="get_sales_order_status",
+        content=result_str,
+        payload=summary,
+    )
+
+    result = parsed_result if isinstance(parsed_result, dict) else {}
+    if result.get("error"):
+        return (
+            f"Runtime order status lookup for {active_order_name} returned an error. "
+            "Do not claim the order is editable or locked without a successful status tool result."
+        )
+    if result.get("can_modify") is True:
+        return (
+            f"Runtime order status lookup confirms that sales order {active_order_name} is in state "
+            f"{result.get('order_state') or result.get('status') or 'unknown'} and can be modified. "
+            "When the customer asks to add items to the current order, use update_sales_order instead of saying it is locked."
+        )
+    if result.get("can_modify") is False:
+        return (
+            f"Runtime order status lookup confirms that sales order {active_order_name} cannot be modified in its current state. "
+            "Do not attempt to update it. Offer a new order or the current order PDF instead."
+        )
+    return None
+
+
 def _extract_output_text(response: dict[str, Any]) -> str:
     text_parts: list[str] = []
     for item in response.get("output", []):
@@ -1571,6 +1702,16 @@ async def process_message_result(
         session=session,
         intent=session.get("last_intent"),
     )
+    prefetched_order_status_context = await _maybe_prefetch_order_status_context(
+        lc=lc,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        current_lang=current_lang,
+        user_text=user_text,
+        tenant=tenant,
+        session=session,
+    )
     prefetched_availability_context = await _maybe_prefetch_availability_context(
         lc=lc,
         company_code=company_code,
@@ -1608,6 +1749,8 @@ async def process_message_result(
             )
             if prefetched_catalog_context:
                 system_prompt = system_prompt + "\n\n" + prefetched_catalog_context
+            if prefetched_order_status_context:
+                system_prompt = system_prompt + "\n\n" + prefetched_order_status_context
             if prefetched_availability_context:
                 system_prompt = system_prompt + "\n\n" + prefetched_availability_context
             response = await _create_openai_response(

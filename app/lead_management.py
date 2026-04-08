@@ -1212,6 +1212,21 @@ def update_lead_profile_from_message(
     requested_items = _parse_requested_items(semantic_text)
     qty = _first_qty(semantic_text)
     extracted_uom = _extract_single_item_uom(semantic_text, lead_config)
+    correction_requested = _order_correction_requested(
+        user_text=user_text,
+        intent=resolved_intent,
+        active_order_name=active_order_name,
+        config=lead_config,
+    )
+    preserve_order_service_anchor = bool(
+        active_order_name
+        and resolved_stage in {"invoice", "service", "closed"}
+        and resolved_intent in {"service_request", "low_signal"}
+        and not correction_requested
+    )
+    product_resolution_intent = resolved_intent
+    if correction_requested and resolved_intent in {"service_request", "low_signal", "order_detail"}:
+        product_resolution_intent = "add_to_order"
 
     if requested_items:
         assumed_uom = _multi_item_default_uom(lead_config)
@@ -1231,11 +1246,11 @@ def update_lead_profile_from_message(
         confirmed_uom = _confirmed_multi_item_uom(user_text, profile, lead_config)
         if confirmed_uom:
             _apply_multi_item_uom(profile, confirmed_uom)
-    elif _should_replace_product_interest(
+    elif not preserve_order_service_anchor and _should_replace_product_interest(
         current_interest=_clean_text(profile.get("product_interest")),
         normalized_text=normalized_text,
         current_priority=current_priority,
-        resolved_intent=resolved_intent,
+        resolved_intent=product_resolution_intent,
         extracted_uom=extracted_uom,
         qty=qty,
         config=lead_config,
@@ -1277,15 +1292,7 @@ def update_lead_profile_from_message(
         profile["decision_status"] = "ready_to_buy"
     elif resolved_intent in {"find_product", "browse_catalog"}:
         profile["decision_status"] = "evaluating"
-    if active_order_name and (
-        resolved_intent == "order_detail"
-        or _order_correction_requested(
-            user_text=user_text,
-            intent=resolved_intent,
-            active_order_name=active_order_name,
-            config=lead_config,
-        )
-    ):
+    if active_order_name and (resolved_intent == "order_detail" or correction_requested):
         profile["order_correction_status"] = "requested"
         profile["target_order_id"] = profile.get("target_order_id") or active_order_name
         profile["correction_type"] = profile.get("correction_type") or _correction_type(user_text)

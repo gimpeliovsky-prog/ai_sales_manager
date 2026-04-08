@@ -53,6 +53,7 @@ ORDER_POLICY: list[str] = [
     "If the buyer is already identified, do not ask again for name or phone unless the customer wants to change them.",
     "When the buyer has prior sales history, use that context to recognize returning purchase patterns without inventing facts.",
     "If there is an active draft order and the customer wants to add more items, update that order instead of creating a new one.",
+    "Do not claim that the current order is locked, not editable, or cannot be modified unless an order-status tool result in this conversation confirms active_order_can_modify=false.",
     "If the customer asks to send the current order, send the order PDF and do not create an invoice instead.",
     "When next_action is confirm_order and the customer explicitly confirms, call create_sales_order or update_sales_order immediately instead of asking for confirmation again.",
     "After a successful order creation, you may offer to create an invoice.",
