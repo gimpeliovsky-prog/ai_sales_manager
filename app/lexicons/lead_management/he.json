@@ -76,6 +76,11 @@
     "היי",
     "תודה"
   ],
+  "signal_regexes": {
+    "correction_quantity": [
+      "\\b(?:שנה|תשנה|עדכן|תעדכן)\\b.*\\bכמות\\b"
+    ]
+  },
   "signal_terms": {
     "urgency": [
       "דחוף",

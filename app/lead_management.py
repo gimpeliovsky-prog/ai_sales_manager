@@ -10,9 +10,11 @@ from app.lead_lexicon import (
     commercial_cue_regex,
     contact_intro_regex,
     generic_product_tokens,
+    lexicon_default,
     lexicon_terms,
     product_interest_filler_terms,
     product_interest_noise_terms,
+    signal_regexes as lexicon_signal_regexes,
     signal_terms as lexicon_signal_terms,
     yes_regex,
 )
@@ -406,7 +408,7 @@ def _uom_config(config: dict[str, Any] | None, legacy_terms_key: str | None = No
 
 
 def _multi_item_default_uom(config: dict[str, Any] | None) -> str:
-    raw_value = str(_lead_config(config).get("multi_item_default_uom") or "box").strip() or "box"
+    raw_value = str(_lead_config(config).get("multi_item_default_uom") or lexicon_default("multi_item_default_uom", "box")).strip() or "box"
     return canonical_uom(raw_value, _uom_config(config, "multi_item_uom_terms")) or raw_value
 
 
@@ -601,13 +603,21 @@ def _configured_terms(config: dict[str, Any] | None, signal: str) -> list[str]:
 
 
 def _configured_regexes(config: dict[str, Any] | None, signal: str) -> list[str]:
+    regexes = list(lexicon_signal_regexes(signal))
     configured_regexes = _lead_config(config).get("signal_regexes")
-    if not isinstance(configured_regexes, dict):
-        return []
-    regexes = configured_regexes.get(signal)
-    if not isinstance(regexes, list):
-        return []
-    return [str(pattern).strip() for pattern in regexes if str(pattern).strip()]
+    if isinstance(configured_regexes, dict):
+        extra_regexes = configured_regexes.get(signal)
+        if isinstance(extra_regexes, list):
+            regexes.extend(str(pattern).strip() for pattern in extra_regexes if str(pattern).strip())
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for pattern in regexes:
+        key = str(pattern or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+    return deduped
 
 
 def _order_correction_requested(*, user_text: str, intent: str, active_order_name: str | None, config: dict[str, Any] | None) -> bool:

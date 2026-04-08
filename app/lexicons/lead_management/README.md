@@ -17,3 +17,5 @@ Schema:
 - `product_interest_noise_terms`: words stripped from product-interest extraction
 - `product_interest_filler_terms`: greeting/filler words stripped from product-interest extraction
 - `signal_terms`: semantic markers grouped by signal name
+- `signal_regexes`: regex markers grouped by signal name for cases where phrase matching is too weak
+- `defaults`: small non-linguistic defaults consumed by lead-management logic

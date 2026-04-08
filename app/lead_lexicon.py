@@ -17,6 +17,10 @@ _LIST_SECTIONS = {
     "product_interest_noise_terms",
     "product_interest_filler_terms",
 }
+_DICT_LIST_SECTIONS = {
+    "signal_terms",
+    "signal_regexes",
+}
 _EMPTY_REGEX = re.compile(r"(?!x)x")
 
 
@@ -50,7 +54,9 @@ def _append_unique(target: list[str], values: Any) -> None:
 @lru_cache(maxsize=1)
 def load_lead_lexicon() -> dict[str, Any]:
     merged: dict[str, Any] = {section: [] for section in _LIST_SECTIONS}
-    merged["signal_terms"] = {}
+    for section in _DICT_LIST_SECTIONS:
+        merged[section] = {}
+    merged["defaults"] = {}
     if not _LEXICON_DIR.exists():
         return merged
 
@@ -60,11 +66,16 @@ def load_lead_lexicon() -> dict[str, Any]:
             continue
         for section in _LIST_SECTIONS:
             _append_unique(merged[section], payload.get(section))
-        signal_terms = payload.get("signal_terms")
-        if isinstance(signal_terms, dict):
-            for signal, terms in signal_terms.items():
-                bucket = merged["signal_terms"].setdefault(str(signal), [])
-                _append_unique(bucket, terms)
+        for section in _DICT_LIST_SECTIONS:
+            section_payload = payload.get(section)
+            if isinstance(section_payload, dict):
+                for key, values in section_payload.items():
+                    bucket = merged[section].setdefault(str(key), [])
+                    _append_unique(bucket, values)
+        defaults = payload.get("defaults")
+        if isinstance(defaults, dict):
+            for key, value in defaults.items():
+                merged["defaults"][str(key)] = value
     return merged
 
 
@@ -79,6 +90,21 @@ def signal_terms(signal: str) -> list[str]:
         return []
     values = signals.get(signal)
     return list(values) if isinstance(values, list) else []
+
+
+def signal_regexes(signal: str) -> list[str]:
+    signals = load_lead_lexicon().get("signal_regexes")
+    if not isinstance(signals, dict):
+        return []
+    values = signals.get(signal)
+    return list(values) if isinstance(values, list) else []
+
+
+def lexicon_default(key: str, default: Any = None) -> Any:
+    defaults = load_lead_lexicon().get("defaults")
+    if not isinstance(defaults, dict):
+        return default
+    return defaults.get(key, default)
 
 
 def generic_product_tokens() -> set[str]:

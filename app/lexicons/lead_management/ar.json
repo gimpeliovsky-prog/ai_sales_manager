@@ -82,6 +82,11 @@
     "اهلا",
     "شكرا"
   ],
+  "signal_regexes": {
+    "correction_quantity": [
+      "\\b(?:غير|تغيير|حدث|تحديث)\\b.*\\bالكمية\\b"
+    ]
+  },
   "signal_terms": {
     "urgency": [
       "بسرعة",

@@ -164,6 +164,14 @@
     "thanks",
     "thank you"
   ],
+  "signal_regexes": {
+    "correction_quantity": [
+      "\\b(?:change|update|make|set)\\b.*\\bfrom\\s*\\d+(?:[.,]\\d+)?\\s*to\\s*\\d+(?:[.,]\\d+)?\\b"
+    ]
+  },
+  "defaults": {
+    "multi_item_default_uom": "box"
+  },
   "signal_terms": {
     "urgency": [
       "asap",
