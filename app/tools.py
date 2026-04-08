@@ -307,6 +307,82 @@ def _filter_catalog_matches(result: dict[str, Any], query: str | None) -> dict[s
     return updated
 
 
+def _order_item_search_text(item: dict[str, Any]) -> str:
+    return _normalize_match_text(
+        " ".join(
+            str(item.get(key) or "")
+            for key in ("item_name", "item_code", "description")
+        )
+    )
+
+
+def _match_order_item_from_user_text(user_text: str, order_items: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    if not isinstance(order_items, list) or not order_items:
+        return None
+    normalized_text = _normalize_match_text(user_text or "")
+    if not normalized_text:
+        return None
+    query_tokens = set(_query_tokens(normalized_text))
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for item in order_items:
+        if not isinstance(item, dict):
+            continue
+        item_text = _order_item_search_text(item)
+        if not item_text:
+            continue
+        score = 0
+        for alias in (
+            str(item.get("item_name") or "").strip(),
+            str(item.get("item_code") or "").strip(),
+            str(item.get("description") or "").strip(),
+        ):
+            normalized_alias = _normalize_match_text(alias)
+            if not normalized_alias:
+                continue
+            alias_tokens = set(_query_tokens(normalized_alias))
+            if normalized_alias and normalized_alias in normalized_text:
+                score = max(score, 100 + len(alias_tokens))
+            elif alias_tokens and alias_tokens.issubset(query_tokens):
+                score = max(score, 10 + len(alias_tokens))
+        if score > 0:
+            candidates.append((score, item))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+        return None
+    return candidates[0][1]
+
+
+def _ground_order_correction_items(
+    *,
+    items: list[dict[str, Any]],
+    order_items: list[dict[str, Any]] | None,
+    user_text: str,
+) -> list[dict[str, Any]]:
+    matched_order_item = _match_order_item_from_user_text(user_text, order_items)
+    if not matched_order_item:
+        return items
+    grounded_items: list[dict[str, Any]] = []
+    matched_item_code = str(matched_order_item.get("item_code") or "").strip()
+    matched_row_name = str(matched_order_item.get("name") or "").strip()
+    matched_uom = str(matched_order_item.get("uom") or matched_order_item.get("stock_uom") or "").strip()
+    for item in items:
+        if not isinstance(item, dict):
+            grounded_items.append(item)
+            continue
+        grounded = dict(item)
+        action = str(grounded.get("action") or "add").strip().casefold() or "add"
+        if action in {"update", "remove", "delete"}:
+            grounded["item_code"] = matched_item_code or grounded.get("item_code")
+            if matched_row_name:
+                grounded["row_name"] = matched_row_name
+            if matched_uom and not str(grounded.get("uom") or "").strip():
+                grounded["uom"] = matched_uom
+        grounded_items.append(grounded)
+    return grounded_items
+
+
 async def _load_catalog_item(lc: LicenseClient, company_code: str, item_code: str, current_lang: str) -> dict[str, Any]:
     requested_lang = _catalog_lang(current_lang)
     for candidate_lang in (requested_lang, None):
@@ -525,7 +601,12 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
         state = normalize_order_state(order if isinstance(order, dict) else {})
         if not state.get("can_modify"):
             return {"error": "Sales order cannot be modified in its current state.", "error_code": "sales_order_not_modifiable", **state}
-        return await lc.update_sales_order_items(company_code, sales_order_name, normalized_items_result["items"])
+        grounded_items = _ground_order_correction_items(
+            items=normalized_items_result["items"],
+            order_items=state.get("items"),
+            user_text=user_text,
+        )
+        return await lc.update_sales_order_items(company_code, sales_order_name, grounded_items)
     if name == "get_sales_order_status":
         sales_order_name = inp.get("sales_order_name") or active_sales_order_name
         if not sales_order_name:
