@@ -297,6 +297,12 @@ def empty_lead_profile() -> dict[str, Any]:
         "catalog_lookup_status": "unknown",
         "catalog_lookup_match_count": 0,
         "catalog_lookup_at": None,
+        "availability_item_code": None,
+        "availability_item_name": None,
+        "availability_in_stock": None,
+        "availability_total_available_qty": None,
+        "availability_stock_uom": None,
+        "availability_checked_at": None,
         "quantity": None,
         "uom": None,
         "requested_items": [],
@@ -1293,6 +1299,13 @@ def update_lead_profile_from_tool(
         profile["active_order_checked_at"] = resolved_now.isoformat()
         if profile.get("order_correction_status") == "requested":
             profile["next_action"] = "apply_order_correction" if tool_result.get("can_modify") else "handoff_manager"
+    if tool_name == "get_item_availability" and not tool_result.get("error"):
+        profile["availability_item_code"] = _clean_text(tool_result.get("item_code"), limit=64)
+        profile["availability_item_name"] = _clean_text(tool_result.get("item_name"), limit=160)
+        profile["availability_in_stock"] = bool(tool_result.get("in_stock"))
+        profile["availability_total_available_qty"] = _first_number(tool_result.get("total_available_qty"))
+        profile["availability_stock_uom"] = _clean_text(tool_result.get("stock_uom"), limit=32)
+        profile["availability_checked_at"] = resolved_now.isoformat()
     if tool_name == "create_invoice" and tool_result.get("name"):
         profile["status"] = "won"
     if tool_name == "create_sales_order" and tool_result.get("name"):

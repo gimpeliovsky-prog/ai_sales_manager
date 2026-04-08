@@ -40,6 +40,7 @@ from app.lead_management import (  # noqa: E402
 from app.llm_state_updater import parse_llm_state_update  # noqa: E402
 from app.outbound_channels import build_followup_message, build_sales_owner_message, mark_followup_attempt  # noqa: E402
 from app.prompt_registry import build_runtime_system_prompt  # noqa: E402
+from app.runtime_availability_context import should_prefetch_item_availability  # noqa: E402
 from app.runtime_catalog_context import build_catalog_prefetch_context, should_prefetch_catalog_options  # noqa: E402
 from app.sales_governance import evaluate_sla_breaches, record_new_sla_breaches  # noqa: E402
 from app.sales_crm_sync import build_sales_crm_outbox_event  # noqa: E402
@@ -217,12 +218,34 @@ def run_prompt_override_evals() -> list[str]:
         failures.append("prompt_state_guard_known_uom: expected known-uom guard in prompt")
     if "The next step is to show matching catalog options" not in guarded_prompt:
         failures.append("prompt_state_guard_show_matching_options: expected option-selection guard in prompt")
+    if "use the availability tool result instead of guessing" not in guarded_prompt:
+        failures.append("prompt_stock_tool_guidance: expected availability-tool guidance in prompt")
 
     handoff_message = get_handoff_message("ru", ai_policy=tenant["ai_policy"])
     if handoff_message != "Передаю живому менеджеру.":
         failures.append(
             f"handoff_message_override: expected custom handoff message, got {handoff_message!r}"
         )
+    return failures
+
+
+def run_runtime_availability_evals() -> list[str]:
+    failures: list[str] = []
+    if not should_prefetch_item_availability(
+        lead_profile={"catalog_item_code": "ITEM-001"},
+        user_text="Do you have it in stock?",
+    ):
+        failures.append("runtime_availability_prefetch_stock_question: expected True")
+    if should_prefetch_item_availability(
+        lead_profile={"catalog_item_code": "ITEM-001"},
+        user_text="How much does it cost?",
+    ):
+        failures.append("runtime_availability_prefetch_non_stock_question: expected False")
+    if should_prefetch_item_availability(
+        lead_profile={"product_interest": "backpack"},
+        user_text="Is it available?",
+    ):
+        failures.append("runtime_availability_prefetch_without_item_code: expected False")
     return failures
 
 
@@ -1674,6 +1697,7 @@ def main() -> int:
     failures.extend(run_tool_policy_evals())
     failures.extend(run_tool_schema_evals())
     failures.extend(run_prompt_override_evals())
+    failures.extend(run_runtime_availability_evals())
     failures.extend(run_language_lock_evals())
     failures.extend(run_i18n_evals())
     failures.extend(run_catalog_localization_evals())
