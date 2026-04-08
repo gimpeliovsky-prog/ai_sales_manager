@@ -89,6 +89,122 @@ def _tool_result_summary(tool_name: str, result: dict[str, Any]) -> dict[str, An
     return summary
 
 
+def _compact_sales_order_items_for_model(items: Any, *, limit: int = 20) -> list[dict[str, Any]]:
+    compact_items: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        compact = {
+            "name": item.get("name"),
+            "item_code": item.get("item_code"),
+            "item_name": item.get("item_name"),
+            "qty": item.get("qty"),
+            "uom": item.get("uom") or item.get("stock_uom"),
+        }
+        compact = {key: value for key, value in compact.items() if value not in (None, "", [])}
+        if compact:
+            compact_items.append(compact)
+        if len(compact_items) >= limit:
+            break
+    return compact_items
+
+
+def _compact_catalog_items_for_model(items: Any, *, limit: int = 5) -> list[dict[str, Any]]:
+    compact_items: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        uoms: list[dict[str, Any]] = []
+        for uom in item.get("available_uoms") if isinstance(item.get("available_uoms"), list) else []:
+            if not isinstance(uom, dict):
+                continue
+            uom_compact = {
+                "uom": uom.get("uom"),
+                "display_name": uom.get("display_name"),
+                "uom_semantic": uom.get("uom_semantic"),
+            }
+            uoms.append({key: value for key, value in uom_compact.items() if value not in (None, "", [])})
+        compact = {
+            "item_code": item.get("item_code"),
+            "item_name": item.get("item_name"),
+            "display_item_name": item.get("display_item_name"),
+            "description": item.get("description"),
+            "currency": item.get("currency"),
+            "image_url": item.get("image_url"),
+            "stock_uom_label": item.get("stock_uom_label"),
+            "customer_uom_options": item.get("customer_uom_options"),
+            "customer_uom_summary": item.get("customer_uom_summary"),
+            "available_uoms": uoms,
+        }
+        compact = {key: value for key, value in compact.items() if value not in (None, "", [])}
+        if compact:
+            compact_items.append(compact)
+        if len(compact_items) >= limit:
+            break
+    return compact_items
+
+
+def _compact_tool_result_for_model(tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "invalid_tool_result"}
+    if result.get("error"):
+        compact_error = {
+            "error": result.get("error"),
+            "error_code": result.get("error_code"),
+            "tool_name": tool_name,
+        }
+        if tool_name == "get_sales_order_status" or result.get("sales_order_name") or result.get("name"):
+            compact_error.update(
+                {
+                    "sales_order_name": result.get("sales_order_name") or result.get("name"),
+                    "order_state": result.get("order_state"),
+                    "can_modify": result.get("can_modify"),
+                }
+            )
+        return {key: value for key, value in compact_error.items() if value not in (None, "", [])}
+
+    if tool_name == "get_sales_order_status":
+        compact = {
+            "sales_order_name": result.get("sales_order_name") or result.get("name"),
+            "order_state": result.get("order_state"),
+            "can_modify": result.get("can_modify"),
+            "status": result.get("status"),
+            "docstatus": result.get("docstatus"),
+            "delivery_status": result.get("delivery_status"),
+            "billing_status": result.get("billing_status"),
+            "order_total": result.get("order_total") or result.get("grand_total") or result.get("total"),
+            "currency": result.get("currency"),
+            "items": _compact_sales_order_items_for_model(result.get("items")),
+        }
+        return {key: value for key, value in compact.items() if value not in (None, "", [])}
+
+    if tool_name == "get_product_catalog":
+        compact = {
+            "items": _compact_catalog_items_for_model(result.get("items")),
+            "resolved_via_item_code": result.get("resolved_via_item_code"),
+            "price_display_blocked": result.get("price_display_blocked"),
+            "price_display_blocked_reason": result.get("price_display_blocked_reason"),
+            "price_anchor": result.get("price_anchor"),
+        }
+        return {key: value for key, value in compact.items() if value not in (None, "", [])}
+
+    if tool_name == "get_item_availability":
+        compact = {
+            "item_code": result.get("item_code"),
+            "item_name": result.get("item_name"),
+            "stock_uom": result.get("stock_uom"),
+            "in_stock": result.get("in_stock"),
+            "total_available_qty": result.get("total_available_qty"),
+            "effective_warehouse": result.get("effective_warehouse") or result.get("warehouse"),
+            "default_warehouse": result.get("default_warehouse"),
+            "known_warehouses": (result.get("known_warehouses") or [])[:5] if isinstance(result.get("known_warehouses"), list) else None,
+            "needs_warehouse_selection": result.get("needs_warehouse_selection"),
+        }
+        return {key: value for key, value in compact.items() if value not in (None, "", [])}
+
+    return result
+
+
 def _session_id(channel: str, channel_uid: str) -> str:
     return f"{channel}:{channel_uid}"
 
@@ -1883,7 +1999,6 @@ async def process_message_result(
                 )
                 if policy_result:
                     parsed_result = policy_result
-                    model_result_str = json.dumps(policy_result, ensure_ascii=False, default=str)
                 else:
                     result_str = await execute_tool(
                         name=tool_name,
@@ -1904,7 +2019,8 @@ async def process_message_result(
                         parsed_result = json.loads(result_str)
                     except json.JSONDecodeError:
                         parsed_result = {"raw_result": result_str}
-                    model_result_str = json.dumps(parsed_result, ensure_ascii=False, default=str)
+                model_result_payload = _compact_tool_result_for_model(tool_name, parsed_result if isinstance(parsed_result, dict) else {})
+                model_result_str = json.dumps(model_result_payload, ensure_ascii=False, default=str)
 
                 if tool_name == "register_buyer" and parsed_result.get("erp_customer_id"):
                     _apply_buyer_context(session, parsed_result)

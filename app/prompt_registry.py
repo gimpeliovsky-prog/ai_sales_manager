@@ -142,18 +142,27 @@ def _buyer_context_lines(
     return lines
 
 
-def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
+def _lead_profile_lines(lead_profile: dict[str, Any] | None, *, stage: str | None = None) -> list[str]:
     if not isinstance(lead_profile, dict):
         return []
     lines: list[str] = []
-    for key, label in [
+    common_fields = [
         ("status", "Lead status"),
         ("next_action", "Recommended next action"),
-        ("qualification_priority", "Qualification priority"),
         ("product_interest", "Product interest"),
         ("product_resolution_status", "Product resolution status"),
         ("catalog_item_code", "Selected catalog item code"),
         ("catalog_item_name", "Selected catalog item name"),
+        ("quantity", "Quantity"),
+        ("uom", "Unit"),
+        ("quote_status", "Quote status"),
+        ("order_total", "Order total"),
+        ("currency", "Currency"),
+        ("score", "Lead score"),
+        ("temperature", "Lead temperature"),
+    ]
+    discovery_fields = [
+        ("qualification_priority", "Qualification priority"),
         ("catalog_lookup_query", "Latest catalog lookup query"),
         ("catalog_lookup_status", "Latest catalog lookup status"),
         ("availability_item_code", "Latest availability item code"),
@@ -162,8 +171,6 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
         ("availability_total_available_qty", "Latest availability total available quantity"),
         ("availability_stock_uom", "Latest availability stock unit"),
         ("availability_needs_warehouse_selection", "Latest availability needs warehouse selection"),
-        ("quantity", "Quantity"),
-        ("uom", "Unit"),
         ("requested_items_have_quantities", "Requested items have quantities"),
         ("requested_items_need_uom_confirmation", "Requested items need UOM confirmation"),
         ("requested_items_assumed_uom", "Requested items assumed UOM"),
@@ -171,17 +178,20 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
         ("urgency", "Urgency"),
         ("delivery_need", "Delivery need"),
         ("decision_status", "Decision status"),
+    ]
+    order_fields = [
         ("order_correction_status", "Order correction status"),
         ("target_order_id", "Target order id for correction"),
         ("correction_type", "Order correction type"),
         ("active_order_state", "Active order state"),
         ("active_order_can_modify", "Active order can modify"),
-        ("quote_status", "Quote status"),
-        ("order_total", "Order total"),
-        ("currency", "Currency"),
-        ("score", "Lead score"),
-        ("temperature", "Lead temperature"),
-    ]:
+    ]
+    fields = list(common_fields)
+    if stage in {"service", "invoice", "closed"}:
+        fields.extend(order_fields)
+    else:
+        fields.extend(discovery_fields)
+    for key, label in fields:
         value = lead_profile.get(key)
         if value not in (None, "", []):
             lines.append(f"{label}: {value}")
@@ -343,7 +353,7 @@ def build_runtime_system_prompt(
     if buyer_context:
         lines.append("")
         lines.extend(_section("Buyer context", buyer_context))
-    lead_profile_context = _lead_profile_lines(lead_profile)
+    lead_profile_context = _lead_profile_lines(lead_profile, stage=resolved_stage)
     if lead_profile_context:
         lines.append("")
         lines.extend(_section("Lead profile", lead_profile_context))
