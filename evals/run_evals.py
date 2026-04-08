@@ -903,6 +903,60 @@ def run_lead_management_evals() -> list[str]:
             "contact_plus_order_message_keeps_commercial_slots_only",
         )
     )
+    stale_need_profile = update_lead_profile_from_message(
+        current_profile={
+            "status": "qualified",
+            "need": "my name is Peter",
+            "product_interest": "my name is Peter",
+            "catalog_lookup_query": "my name is Peter",
+            "catalog_lookup_status": "no_match",
+        },
+        user_text="book",
+        stage="discover",
+        behavior_class="direct_buyer",
+        intent="find_product",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            stale_need_profile,
+            {"product_interest": "book", "need": "book", "catalog_lookup_query": None},
+            "stale_need_is_replaced_when_product_changes",
+        )
+    )
+    resolved_book_profile = update_lead_profile_from_tool(
+        current_profile={
+            "status": "qualified",
+            "need": "my name is Peter",
+            "product_interest": "book",
+            "catalog_lookup_query": "book",
+            "catalog_lookup_status": "found",
+        },
+        tool_name="get_product_catalog",
+        inputs={"item_name": "book"},
+        tool_result={"items": [{"item_code": "SKU003", "display_item_name": "Book"}]},
+        stage="discover",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            resolved_book_profile,
+            {"catalog_item_code": "SKU003", "catalog_item_name": "Book", "need": "Book"},
+            "specific_item_resolution_updates_need_anchor",
+        )
+    )
+    prompt_with_selected_item = build_runtime_system_prompt(
+        tenant={"company_name": "Test", "company_code": "dev"},
+        lang="en",
+        channel="telegram",
+        stage="discover",
+        behavior_class="direct_buyer",
+        lead_profile=resolved_book_profile,
+    )
+    if "Exact catalog item is already resolved as Book (SKU003)." not in prompt_with_selected_item:
+        failures.append("selected_item_prompt_guard_present: expected exact item guard in runtime prompt")
     llm_driven_selection_profile = update_lead_profile_from_message(
         current_profile={"status": "new_lead", "product_interest": "backpack", "product_resolution_status": "broad"},
         user_text="which do you have?",

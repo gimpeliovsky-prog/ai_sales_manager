@@ -3,18 +3,19 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.lead_management import normalize_lead_profile
+from app.lead_management import normalize_catalog_lookup_query, normalize_lead_profile
 
 _CATALOG_PREFETCH_OPTION_LIMIT = 3
 
 
 def catalog_prefetch_search_term(lead_profile: dict[str, Any] | None) -> str | None:
     profile = normalize_lead_profile(lead_profile)
-    for candidate in (
+    prioritized_candidates = [
         profile.get("catalog_item_name"),
         profile.get("product_interest"),
-        profile.get("need"),
-    ):
+        normalize_catalog_lookup_query(profile.get("need")),
+    ]
+    for candidate in prioritized_candidates:
         text = re.sub(r"\s+", " ", str(candidate or "")).strip()
         if text:
             return text[:160]

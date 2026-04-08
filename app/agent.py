@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 _PHONE_RE = re.compile(r"(\+?\d[\d\s\-\(\)]{7,}\d)")
 _MAX_OPENAI_INPUT_ITEMS = 48
 _MAX_OPENAI_INPUT_BYTES = 180_000
+_MAX_OPENAI_HISTORY_ITEMS = 16
 
 def _empty_result() -> dict[str, Any]:
     return {"text": "...", "documents": []}
@@ -522,6 +523,11 @@ def _estimate_input_items_size(input_items: list[dict[str, Any]]) -> int:
 def _trim_input_items(input_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     trimmed = list(input_items)
     removed = 0
+    if len(trimmed) > _MAX_OPENAI_HISTORY_ITEMS:
+        current_turn = trimmed[-1:]
+        history = trimmed[:-1]
+        removed += len(history) - (_MAX_OPENAI_HISTORY_ITEMS - len(current_turn))
+        trimmed = history[-(_MAX_OPENAI_HISTORY_ITEMS - len(current_turn)) :] + current_turn
     while len(trimmed) > _MAX_OPENAI_INPUT_ITEMS or _estimate_input_items_size(trimmed) > _MAX_OPENAI_INPUT_BYTES:
         if len(trimmed) <= 2:
             break

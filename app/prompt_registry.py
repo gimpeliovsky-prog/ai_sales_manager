@@ -228,6 +228,15 @@ def _lead_state_guard_lines(lead_profile: dict[str, Any] | None) -> list[str]:
     product_interest = lead_profile.get("product_interest")
     quantity = lead_profile.get("quantity")
     uom = lead_profile.get("uom")
+    selected_item_name = lead_profile.get("catalog_item_name")
+    selected_item_code = lead_profile.get("catalog_item_code")
+    if selected_item_name or selected_item_code:
+        resolved_item = str(selected_item_name or selected_item_code)
+        if selected_item_code and selected_item_name:
+            resolved_item = f"{selected_item_name} ({selected_item_code})"
+        lines.append(
+            f"Exact catalog item is already resolved as {resolved_item}. Do not ask again for the exact model or variant unless the customer changes the product."
+        )
     if product_interest:
         if lead_profile.get("product_resolution_status") == "broad":
             lines.append(

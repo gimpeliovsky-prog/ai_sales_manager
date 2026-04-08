@@ -550,6 +550,7 @@ def apply_llm_lead_patch(
     if current_interest and current_interest != previous_interest:
         _reset_catalog_lookup_state(profile)
     _set_product_resolution_state(profile)
+    _synchronize_need_anchor(profile, lead_config)
     return profile
 
 
@@ -704,6 +705,29 @@ def _refines_interest(candidate: str | None, current_interest: str | None) -> bo
     if candidate_tokens and current_tokens and current_tokens.issubset(candidate_tokens) and candidate_tokens != current_tokens:
         return True
     return _same_interest(candidate_text, current_text) and len(candidate_text) > len(current_text) + 3
+
+
+def _synchronize_need_anchor(profile: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
+    anchor_display = _clean_text(profile.get("catalog_item_name")) or _clean_text(profile.get("product_interest"))
+    if not anchor_display:
+        return profile
+    current_need = _clean_text(profile.get("need"))
+    if not current_need:
+        profile["need"] = anchor_display
+        return profile
+
+    normalized_anchor = normalize_catalog_lookup_query(anchor_display, config) or anchor_display
+    normalized_need = normalize_catalog_lookup_query(current_need, config) or current_need
+    aligned = (
+        _same_interest(normalized_need, normalized_anchor)
+        or _refines_interest(normalized_need, normalized_anchor)
+        or _refines_interest(normalized_anchor, normalized_need)
+    )
+    if not aligned:
+        profile["need"] = anchor_display
+    elif profile.get("catalog_item_name") and _same_interest(normalized_need, _clean_text(profile.get("product_interest"))):
+        profile["need"] = anchor_display
+    return profile
 
 
 def _should_replace_product_interest(
@@ -1224,6 +1248,7 @@ def update_lead_profile_from_message(
     if extracted_uom and not requested_items:
         profile["uom"] = extracted_uom
     _set_product_resolution_state(profile)
+    _synchronize_need_anchor(profile, lead_config)
     if _signal_matches(user_text, "urgency", lead_config):
         profile["urgency"] = "soon"
     if _signal_matches(user_text, "delivery", lead_config):
@@ -1470,6 +1495,7 @@ def update_lead_profile_from_tool(
     )
     profile["temperature"] = _temperature(int(profile["score"]))
     _set_product_resolution_state(profile)
+    _synchronize_need_anchor(profile)
     profile["next_action"] = _next_action_for(
         status=str(profile.get("status") or "none"),
         stage=str(stage or ""),
