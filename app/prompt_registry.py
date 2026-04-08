@@ -104,6 +104,28 @@ def _section(title: str, lines: list[str]) -> list[str]:
     return [f"{title}:"] + [f"- {line}" for line in lines]
 
 
+def _dedupe_lines(lines: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for line in lines:
+        normalized = str(line or "").strip()
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    return deduped
+
+
+def _select_policy_lines(base: list[str], overrides: Any, indexes: list[int]) -> list[str]:
+    selected = [base[index] for index in indexes if 0 <= index < len(base)]
+    if isinstance(overrides, list):
+        selected.extend(str(item).strip() for item in overrides if str(item).strip())
+    return _dedupe_lines(selected)
+
+
 def _buyer_context_lines(
     *,
     buyer_name: str | None,
@@ -281,10 +303,47 @@ def _tenant_policy_lines(tenant: dict[str, Any]) -> list[str]:
         lines.append("Do not offer invoice creation for this tenant unless the customer is handed off.")
     if not bool(ai_policy.get("allow_license_ops", True)):
         lines.append("Do not offer license creation or subscription extension in this tenant flow.")
-    allowed_tools = ai_policy.get("allowed_tools")
-    if isinstance(allowed_tools, list) and allowed_tools:
-        lines.append(f"Enabled tools for this tenant: {', '.join(str(tool) for tool in allowed_tools)}")
     return lines
+
+
+def _runtime_policy_lines(
+    *,
+    stage: str,
+    prompt_overrides: dict[str, Any],
+) -> list[str]:
+    stage_key = stage if stage in STAGE_PROMPTS else DEFAULT_STAGE
+    core_indexes = [0, 1, 3, 4, 5, 6]
+    language_indexes = [0, 2, 3]
+
+    if stage_key in {"new", "identify", "lead_capture", "discover", "clarify"}:
+        catalog_indexes = [0, 1, 2, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        order_indexes = [0, 1, 2]
+        service_indexes: list[int] = []
+        playbook_indexes = [0, 1, 2, 3, 4, 5, 7, 8, 10]
+    elif stage_key in {"order_build", "confirm"}:
+        catalog_indexes = [0, 1, 2, 5, 7, 8, 9, 10, 11, 16]
+        order_indexes = [0, 1, 2, 3, 4, 6, 7]
+        service_indexes = []
+        playbook_indexes = [0, 3, 4, 5, 6, 8, 9, 10]
+    elif stage_key in {"service", "invoice", "closed"}:
+        catalog_indexes = [2, 5, 7, 9, 10, 16]
+        order_indexes = [1, 3, 4, 5, 6, 7]
+        service_indexes = [0, 1]
+        playbook_indexes = [10]
+    else:
+        catalog_indexes = [2, 5, 8, 9, 10, 16]
+        order_indexes = [0, 1, 4, 6]
+        service_indexes = [0, 1]
+        playbook_indexes = [10]
+
+    lines: list[str] = []
+    lines.extend(_select_policy_lines(CORE_POLICY, prompt_overrides.get("core_policy"), core_indexes))
+    lines.extend(_select_policy_lines(LANGUAGE_POLICY, prompt_overrides.get("language_policy"), language_indexes))
+    lines.extend(_select_policy_lines(CATALOG_POLICY, prompt_overrides.get("catalog_policy"), catalog_indexes))
+    lines.extend(_select_policy_lines(ORDER_POLICY, prompt_overrides.get("order_policy"), order_indexes))
+    lines.extend(_select_policy_lines(SERVICE_POLICY, prompt_overrides.get("service_policy"), service_indexes))
+    lines.extend(_select_policy_lines(SALES_PLAYBOOK, prompt_overrides.get("sales_playbook"), playbook_indexes))
+    return _dedupe_lines(lines)
 
 
 def build_runtime_system_prompt(
@@ -309,12 +368,6 @@ def build_runtime_system_prompt(
     custom_prompt = str(tenant.get("ai_system_prompt") or "").strip()
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
     prompt_overrides = ai_policy.get("prompt_overrides") if isinstance(ai_policy.get("prompt_overrides"), dict) else {}
-    core_policy = _append_override_lines(CORE_POLICY, prompt_overrides.get("core_policy"))
-    language_policy = _append_override_lines(LANGUAGE_POLICY, prompt_overrides.get("language_policy"))
-    catalog_policy = _append_override_lines(CATALOG_POLICY, prompt_overrides.get("catalog_policy"))
-    order_policy = _append_override_lines(ORDER_POLICY, prompt_overrides.get("order_policy"))
-    service_policy = _append_override_lines(SERVICE_POLICY, prompt_overrides.get("service_policy"))
-    sales_playbook = _append_override_lines(SALES_PLAYBOOK, prompt_overrides.get("sales_playbook"))
     stage_prompts = _merge_prompt_map(STAGE_PROMPTS, prompt_overrides.get("stage_prompts"))
     behavior_prompts = _merge_prompt_map(BEHAVIOR_PROMPTS, prompt_overrides.get("behavior_prompts"))
     channel_prompts = _merge_prompt_map(CHANNEL_PROMPTS, prompt_overrides.get("channel_prompts"))
@@ -323,26 +376,17 @@ def build_runtime_system_prompt(
 
     lines: list[str] = [
         f"You are the AI sales manager for {company_name}.",
-        "You work inside customer messaging channels and can use tools to access ERP-backed business data.",
-        "",
+        "Use tools for ERP-backed facts and keep customer replies concise, natural, and operational.",
     ]
-    lines.extend(_section("Core policy", core_policy))
-    lines.append("")
-    lines.extend(_section("Language policy", language_policy))
-    lines.append("")
-    lines.extend(_section("Catalog and unit policy", catalog_policy))
-    lines.append("")
-    lines.extend(_section("Order policy", order_policy))
-    lines.append("")
-    lines.extend(_section("Service policy", service_policy))
-    lines.append("")
-    lines.extend(_section("Inbound sales playbook", sales_playbook))
-    lines.append("")
-    lines.extend(_section("Tenant context", _tenant_context_lines(tenant, lang)))
+    runtime_policy = _runtime_policy_lines(stage=resolved_stage, prompt_overrides=prompt_overrides)
+    if runtime_policy:
+        lines.append("")
+        lines.extend(_section("Rules", runtime_policy))
+
+    context_lines = _tenant_context_lines(tenant, lang)
     tenant_policy = _tenant_policy_lines(tenant)
     if tenant_policy:
-        lines.append("")
-        lines.extend(_section("Tenant policy", tenant_policy))
+        context_lines.extend(tenant_policy)
     buyer_context = _buyer_context_lines(
         buyer_name=buyer_name,
         erp_customer_id=erp_customer_id,
@@ -350,37 +394,30 @@ def build_runtime_system_prompt(
         recent_sales_orders=recent_sales_orders,
         recent_sales_invoices=recent_sales_invoices,
     )
-    if buyer_context:
-        lines.append("")
-        lines.extend(_section("Buyer context", buyer_context))
+    context_lines.extend(buyer_context)
     lead_profile_context = _lead_profile_lines(lead_profile, stage=resolved_stage)
-    if lead_profile_context:
+    context_lines.extend(lead_profile_context)
+    if context_lines:
         lines.append("")
-        lines.extend(_section("Lead profile", lead_profile_context))
+        lines.extend(_section("Context", _dedupe_lines(context_lines)))
     lead_state_guards = _lead_state_guard_lines(lead_profile)
     if lead_state_guards:
         lines.append("")
-        lines.extend(_section("Lead state guards", lead_state_guards))
-    lines.append("")
-    lines.extend(
-        _section(
-            "Conversation routing context",
-            [
-                f"Current stage: {resolved_stage}",
-                f"Current behavior class: {resolved_behavior}",
-                f"Channel: {channel}",
-            ],
-        )
-    )
-    lines.append("")
-    lines.extend(_section("Stage guidance", stage_prompts[resolved_stage]))
-    lines.append("")
-    lines.extend(_section("Behavior guidance", behavior_prompts[resolved_behavior]))
+        lines.extend(_section("State guards", lead_state_guards))
+
+    routing_lines = [
+        f"Current stage: {resolved_stage}",
+        f"Current behavior class: {resolved_behavior}",
+        f"Channel: {channel}",
+        *stage_prompts[resolved_stage],
+        *behavior_prompts[resolved_behavior],
+    ]
 
     channel_guidance = channel_prompts.get(channel, [])
     if channel_guidance:
-        lines.append("")
-        lines.extend(_section("Channel guidance", channel_guidance))
+        routing_lines.extend(channel_guidance)
+    lines.append("")
+    lines.extend(_section("Routing", routing_lines))
 
     if handoff_required:
         handoff_lines = [
