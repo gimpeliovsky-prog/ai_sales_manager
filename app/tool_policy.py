@@ -53,6 +53,15 @@ def evaluate_tool_call(
     if tool_name == "get_product_catalog":
         return None
 
+    if tool_name == "get_item_availability":
+        if not str(inputs.get("item_code") or "").strip():
+            return _deny(
+                tool_name,
+                "Stock availability requires a specific catalog item code.",
+                "Look up the product in the catalog first and then check availability for the exact item.",
+            )
+        return None
+
     if tool_name == "get_sales_order_status":
         if not (requested_order_name or active_order_name):
             return _deny(

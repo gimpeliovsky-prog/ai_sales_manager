@@ -79,6 +79,10 @@ def _tool_result_summary(tool_name: str, result: dict[str, Any]) -> dict[str, An
     if tool_name == "get_sales_order_status":
         summary["order_state"] = result.get("order_state")
         summary["can_modify"] = result.get("can_modify")
+    if tool_name == "get_item_availability":
+        summary["item_code"] = result.get("item_code")
+        summary["in_stock"] = result.get("in_stock")
+        summary["total_available_qty"] = result.get("total_available_qty")
     return summary
 
 

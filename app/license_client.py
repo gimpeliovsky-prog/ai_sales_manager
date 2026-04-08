@@ -143,6 +143,10 @@ class LicenseClient:
         params = {"lang": lang} if lang else None
         return await self._get(f"/tenants/{company_code}/items/{item_code}", params)
 
+    async def get_item_availability(self, company_code: str, item_code: str, warehouse: str | None = None) -> dict:
+        params = {"warehouse": warehouse} if warehouse else None
+        return await self._get(f"/tenants/{company_code}/items/{item_code}/availability", params)
+
     async def create_sales_order(self, company_code: str, customer: str, delivery_date: str, items: list) -> dict:
         return await self._post(
             f"/tenants/{company_code}/sales-orders",

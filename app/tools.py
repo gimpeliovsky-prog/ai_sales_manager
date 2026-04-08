@@ -32,6 +32,20 @@ TOOLS: list[dict] = [
     },
     {
         "type": "function",
+        "name": "get_item_availability",
+        "description": "Check tool-backed stock availability for a specific catalog item code, optionally in a specific warehouse. Use this before promising stock or availability to the customer.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "item_code": {"type": "string", "description": "ERP item code from the catalog result."},
+                "warehouse": {"type": "string", "description": "Optional warehouse name to narrow availability."},
+            },
+            "required": ["item_code"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
         "name": "create_sales_order",
         "description": "Create a sales order only after the customer clearly confirms the order contents. If the customer asks for boxes, packs, or another non-stock UOM, pass the requested UOM and the matching conversion_factor from the catalog result. If delivery_date is missing, use the earliest reasonable date.",
         "parameters": {
@@ -393,6 +407,11 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
                 cleaned["price_anchor"] = price_anchor_status(lead_profile)
             return cleaned
         return localized
+    if name == "get_item_availability":
+        item_code = str(inp.get("item_code") or "").strip()
+        if not item_code:
+            return {"error": "Item code is required.", "error_code": "item_code_required"}
+        return await lc.get_item_availability(company_code, item_code, inp.get("warehouse"))
     if name == "create_sales_order":
         if not erp_customer_id:
             return {"error": i18n_text("tool_error.buyer_not_identified", current_lang, ai_policy=ai_policy), "error_code": "buyer_not_identified"}
