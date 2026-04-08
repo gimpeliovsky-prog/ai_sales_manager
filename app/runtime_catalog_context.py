@@ -35,10 +35,13 @@ def should_prefetch_catalog_options(*, lead_profile: dict[str, Any] | None, inte
     normalized_last_query = re.sub(r"\s+", " ", str(profile.get("catalog_lookup_query") or "").strip()).casefold()
     last_status = str(profile.get("catalog_lookup_status") or "unknown")
     next_action = str(profile.get("next_action") or "")
+    correction_requested = str(profile.get("order_correction_status") or "") == "requested"
     if str(intent or "") in {"find_product", "browse_catalog", "order_detail", "add_to_order"} and normalized_last_query != normalized_search_term:
         return True
     if str(intent or "") in {"find_product", "browse_catalog", "order_detail", "add_to_order"} and last_status in {"unknown", "error"}:
         return True
+    if correction_requested and next_action in {"clarify_order_correction", "apply_order_correction"}:
+        return normalized_last_query != normalized_search_term or last_status in {"unknown", "error", "no_match"}
     if next_action == "show_matching_options":
         return True
     return next_action == "select_specific_item" and str(intent or "") in {"browse_catalog", "order_detail", "add_to_order"}

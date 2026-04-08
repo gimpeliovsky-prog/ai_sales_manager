@@ -44,6 +44,7 @@ _GENERIC_PRODUCT_TOKENS = {
     "what", "which", "who", "where", "when", "how", "please", "can", "could", "would",
     "product", "products", "item", "items", "model", "models", "variant", "variants",
     "option", "options", "type", "types", "name", "exact", "another", "until", "know",
+    "add", "also", "include", "put", "order", "orders", "this", "current", "existing", "to", "into",
     "dont", "don't", "not",
     "что", "какие", "какой", "покажи", "покажите", "есть", "товар", "товары", "позиция", "позиции",
     "модель", "модели", "вариант", "варианты", "название", "точное", "не", "знаю",
@@ -75,7 +76,7 @@ _CONTACT_INTRO_RE = re.compile(
     r"(?is)\b(?:my\s+name\s+is|name\s+is|i\s+am|i'm|call\s+me|tel(?:ephone)?|phone|mobile|whatsapp|contact)\b[:\s-]*"
 )
 _COMMERCIAL_CUE_RE = re.compile(
-    r"(?is)\b(?:i\s+want|want|need|looking\s+for|show\s+me|what\s+do\s+you\s+have|which\s+do\s+you\s+have|buy|order)\b.*"
+    r"(?is)\b(?:i\s+want|want|need|looking\s+for|show\s+me|what\s+do\s+you\s+have|which\s+do\s+you\s+have|buy)\b.*"
 )
 
 
@@ -657,8 +658,14 @@ def _normalize_single_item_interest(text: str, config: dict[str, Any] | None) ->
     normalized = raw
     normalized = re.sub(_BROWSE_SCAFFOLDING_RE, " ", normalized)
     normalized = re.sub(r"\b(?:i am looking for|i'm looking for|looking for|i want|want|need)\b", " ", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\b(?:add|also add|also|include|put)\b", " ", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\b(?:to|into|in)\s+(?:this|my|the|current|existing)?\s*order\b", " ", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\b(?:this|my|the|current|existing)\s+order\b", " ", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\borders?\b", " ", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"\b(?:a|an|the)\b", " ", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"\d+(?:[.,]\d+)?", " ", normalized)
+    for term in sorted({str(term).strip() for term in _PRODUCT_INTEREST_FILLER_TERMS if str(term).strip()}, key=len, reverse=True):
+        normalized = re.sub(rf"(?<!\w){re.escape(term)}(?!\w)", " ", normalized, flags=re.IGNORECASE)
     for terms in _single_item_uom_terms(config).values():
         for term in terms:
             clean_term = str(term or "").strip()
@@ -1221,7 +1228,7 @@ def update_lead_profile_from_message(
     preserve_order_service_anchor = bool(
         active_order_name
         and resolved_stage in {"invoice", "service", "closed"}
-        and resolved_intent in {"service_request", "low_signal"}
+        and resolved_intent in {"service_request", "low_signal", "order_detail"}
         and not correction_requested
     )
     product_resolution_intent = resolved_intent
