@@ -565,6 +565,7 @@ async def telegram_webhook(
             tenant=tenant,
             channel_context={"telegram_bot_token": bot_token},
         )
+        session = await load_session("telegram", chat_id)
 
     async with httpx.AsyncClient() as client:
         has_sales_order_pdf = False
