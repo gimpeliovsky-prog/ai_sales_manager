@@ -6,6 +6,7 @@ from typing import Any
 
 from app.i18n import template as i18n_template, text as i18n_text
 from app.lead_management import normalize_lead_profile, normalize_telegram_username
+from app.lead_runtime_config import lead_config_from_ai_policy
 from app.sales_policy import sales_policy
 
 
@@ -17,9 +18,7 @@ def _clean_text(value: Any, limit: int = 80) -> str:
 
 
 def _lead_config(ai_policy: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(ai_policy, dict):
-        return {}
-    return ai_policy.get("lead_management") if isinstance(ai_policy.get("lead_management"), dict) else {}
+    return lead_config_from_ai_policy(ai_policy)
 
 
 def _template_from_bucket(bucket: Any, key: str, lang: str) -> str | None:

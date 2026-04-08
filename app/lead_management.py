@@ -10,15 +10,21 @@ from app.lead_lexicon import (
     commercial_cue_regex,
     contact_intro_regex,
     generic_product_tokens,
-    lexicon_default,
-    lexicon_terms,
     product_interest_filler_terms,
     product_interest_noise_terms,
-    signal_regexes as lexicon_signal_regexes,
-    signal_terms as lexicon_signal_terms,
     yes_regex,
 )
-from app.uom_semantics import canonical_uom, uom_aliases
+from app.lead_runtime_config import (
+    configured_signal_regexes,
+    configured_signal_terms,
+    lead_config as runtime_lead_config,
+    merged_uom_config,
+    multi_item_default_uom,
+    multi_item_uom_terms,
+    single_item_cleanup_terms,
+    single_item_uom_terms,
+)
+from app.uom_semantics import canonical_uom
 
 LEAD_STATUSES = {
     "none",
@@ -308,7 +314,7 @@ def apply_llm_lead_patch(
         normalized_interest = _normalize_single_item_interest(patch.get("product_interest"), lead_config) or _clean_text(patch.get("product_interest"))
         current_priority = str(profile.get("qualification_priority") or "product_need")
         patch_qty = _first_number(patch.get("quantity")) if "quantity" in patch else None
-        patch_uom = canonical_uom(patch.get("uom"), _uom_config(lead_config, "single_item_uom_terms")) or _clean_text(patch.get("uom"), limit=40)
+        patch_uom = canonical_uom(patch.get("uom"), merged_uom_config(lead_config, "single_item_uom_terms")) or _clean_text(patch.get("uom"), limit=40)
         allow_interest_update = bool(
             normalized_interest and (
                 not previous_interest
@@ -337,7 +343,7 @@ def apply_llm_lead_patch(
         if quantity is not None:
             profile["quantity"] = quantity
     if "uom" in patch:
-        resolved_uom = canonical_uom(patch.get("uom"), _uom_config(lead_config, "single_item_uom_terms")) or _clean_text(patch.get("uom"), limit=40)
+        resolved_uom = canonical_uom(patch.get("uom"), merged_uom_config(lead_config, "single_item_uom_terms")) or _clean_text(patch.get("uom"), limit=40)
         if resolved_uom:
             profile["uom"] = resolved_uom
     if "urgency" in patch and _clean_text(patch.get("urgency"), limit=40):
@@ -382,60 +388,6 @@ def _semantic_message_text(text: str) -> str:
     return stripped
 
 
-def _lead_config(config: dict[str, Any] | None) -> dict[str, Any]:
-    return config if isinstance(config, dict) else {}
-
-
-def _uom_config(config: dict[str, Any] | None, legacy_terms_key: str | None = None) -> dict[str, Any]:
-    lead_config = _lead_config(config)
-    merged: dict[str, Any] = {}
-    configured_aliases = lead_config.get("uom_aliases")
-    if isinstance(configured_aliases, dict):
-        merged["uom_aliases"] = {key: list(values) for key, values in configured_aliases.items() if isinstance(values, list)}
-    if legacy_terms_key:
-        legacy_terms = lead_config.get(legacy_terms_key)
-        if isinstance(legacy_terms, dict):
-            merged.setdefault("uom_aliases", {})
-            for canonical, values in legacy_terms.items():
-                if not isinstance(values, list):
-                    continue
-                merged["uom_aliases"].setdefault(str(canonical), [])
-                merged["uom_aliases"][str(canonical)].extend(values)
-    configured_labels = lead_config.get("uom_labels")
-    if isinstance(configured_labels, dict):
-        merged["uom_labels"] = configured_labels
-    return merged
-
-
-def _multi_item_default_uom(config: dict[str, Any] | None) -> str:
-    raw_value = str(_lead_config(config).get("multi_item_default_uom") or lexicon_default("multi_item_default_uom", "box")).strip() or "box"
-    return canonical_uom(raw_value, _uom_config(config, "multi_item_uom_terms")) or raw_value
-
-
-def _multi_item_uom_terms(config: dict[str, Any] | None) -> dict[str, list[str]]:
-    return uom_aliases(_uom_config(config, "multi_item_uom_terms"))
-
-
-def _single_item_uom_terms(config: dict[str, Any] | None) -> dict[str, list[str]]:
-    return uom_aliases(_uom_config(config, "single_item_uom_terms"))
-
-
-def _single_item_cleanup_terms(config: dict[str, Any] | None) -> list[str]:
-    terms = list(lexicon_terms("single_item_cleanup_terms"))
-    configured_terms = _lead_config(config).get("single_item_cleanup_terms")
-    if isinstance(configured_terms, list):
-        terms.extend(str(term).strip() for term in configured_terms if str(term).strip())
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for term in terms:
-        key = str(term or "").strip().casefold()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        deduped.append(str(term).strip())
-    return deduped
-
-
 def _phrase_term_pattern(term: str) -> str:
     escaped = re.escape(str(term or "").strip()).replace(r"\ ", r"\s+")
     return rf"(?<!\w){escaped}(?!\w)"
@@ -445,7 +397,7 @@ def _strip_product_interest_noise(text: str, config: dict[str, Any] | None) -> s
     normalized = str(text or "")
     dynamic_terms: list[str] = []
     for signal in ("urgency", "delivery", "quote"):
-        dynamic_terms.extend(_configured_terms(config, signal))
+        dynamic_terms.extend(configured_signal_terms(config, signal))
     terms = [term for term in [*_PRODUCT_INTEREST_NOISE_TERMS, *dynamic_terms] if str(term or "").strip()]
     for term in sorted({str(term).strip() for term in terms}, key=len, reverse=True):
         normalized = re.sub(_phrase_term_pattern(term), " ", normalized, flags=re.IGNORECASE)
@@ -458,7 +410,7 @@ def _extract_single_item_uom(text: str, config: dict[str, Any] | None) -> str | 
         return None
     compact_match = _COMPACT_QTY_UOM_RE.search(text or "")
     compact_uom = str(compact_match.group("uom") or "").strip() if compact_match else ""
-    for uom, terms in _single_item_uom_terms(config).items():
+    for uom, terms in single_item_uom_terms(config).items():
         for term in terms:
             clean_term = str(term or "").strip()
             if not clean_term:
@@ -476,12 +428,12 @@ def _normalize_single_item_interest(text: str, config: dict[str, Any] | None) ->
         return None
     normalized = raw
     normalized = re.sub(_BROWSE_SCAFFOLDING_RE, " ", normalized)
-    for term in sorted({term for term in _single_item_cleanup_terms(config) if term}, key=len, reverse=True):
+    for term in sorted({term for term in single_item_cleanup_terms(config) if term}, key=len, reverse=True):
         normalized = re.sub(_phrase_term_pattern(term), " ", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"\d+(?:[.,]\d+)?", " ", normalized)
     for term in sorted({str(term).strip() for term in _PRODUCT_INTEREST_FILLER_TERMS if str(term).strip()}, key=len, reverse=True):
         normalized = re.sub(rf"(?<!\w){re.escape(term)}(?!\w)", " ", normalized, flags=re.IGNORECASE)
-    for terms in _single_item_uom_terms(config).values():
+    for terms in single_item_uom_terms(config).values():
         for term in terms:
             clean_term = str(term or "").strip()
             if clean_term:
@@ -498,7 +450,7 @@ def normalize_catalog_lookup_query(text: str | None, config: dict[str, Any] | No
         return candidate
     fallback = _strip_product_interest_noise(semantic or str(text or ""), config)
     fallback = re.sub(_BROWSE_SCAFFOLDING_RE, " ", fallback)
-    for term in sorted({term for term in _single_item_cleanup_terms(config) if term}, key=len, reverse=True):
+    for term in sorted({term for term in single_item_cleanup_terms(config) if term}, key=len, reverse=True):
         fallback = re.sub(_phrase_term_pattern(term), " ", fallback, flags=re.IGNORECASE)
     fallback = re.sub(r"\s+", " ", fallback).strip(" ,.;:-")
     return _clean_text(fallback, limit=160)
@@ -592,34 +544,6 @@ def _should_replace_product_interest(
     return False
 
 
-def _configured_terms(config: dict[str, Any] | None, signal: str) -> list[str]:
-    terms = list(lexicon_signal_terms(signal))
-    configured_terms = _lead_config(config).get("signal_terms")
-    if isinstance(configured_terms, dict):
-        extra_terms = configured_terms.get(signal)
-        if isinstance(extra_terms, list):
-            terms.extend(str(term).strip() for term in extra_terms if str(term).strip())
-    return terms
-
-
-def _configured_regexes(config: dict[str, Any] | None, signal: str) -> list[str]:
-    regexes = list(lexicon_signal_regexes(signal))
-    configured_regexes = _lead_config(config).get("signal_regexes")
-    if isinstance(configured_regexes, dict):
-        extra_regexes = configured_regexes.get(signal)
-        if isinstance(extra_regexes, list):
-            regexes.extend(str(pattern).strip() for pattern in extra_regexes if str(pattern).strip())
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for pattern in regexes:
-        key = str(pattern or "").strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        deduped.append(key)
-    return deduped
-
-
 def _order_correction_requested(*, user_text: str, intent: str, active_order_name: str | None, config: dict[str, Any] | None) -> bool:
     if not active_order_name:
         return False
@@ -636,10 +560,10 @@ def _signal_matches(text: str, signal: str, config: dict[str, Any] | None = None
         return False
     if signal == "price" and _CURRENCY_RE.search(text or ""):
         return True
-    for term in _configured_terms(config, signal):
+    for term in configured_signal_terms(config, signal):
         if re.search(_phrase_term_pattern(term), text or "", re.IGNORECASE):
             return True
-    for pattern in _configured_regexes(config, signal):
+    for pattern in configured_signal_regexes(config, signal):
         try:
             if re.search(pattern, text or "", re.IGNORECASE):
                 return True
@@ -690,7 +614,7 @@ def _confirmed_multi_item_uom(text: str, profile: dict[str, Any], config: dict[s
     normalized = (text or "").casefold()
     if not normalized:
         return None
-    for uom, terms in _multi_item_uom_terms(config).items():
+    for uom, terms in multi_item_uom_terms(config).items():
         if any(term.casefold() in normalized for term in terms):
             return str(uom)
     assumed_uom = str(profile.get("requested_items_assumed_uom") or "").strip()
@@ -1079,7 +1003,7 @@ def update_lead_profile_from_message(
         product_resolution_intent = "add_to_order"
 
     if requested_items:
-        assumed_uom = _multi_item_default_uom(lead_config)
+        assumed_uom = multi_item_default_uom(lead_config)
         product_summary = "; ".join(str(item.get("item_text") or "") for item in requested_items if item.get("item_text"))
         profile["requested_items"] = requested_items
         profile["requested_item_count"] = len(requested_items)
@@ -1567,7 +1491,7 @@ def can_send_followup(
     now: datetime | None = None,
 ) -> tuple[bool, str | None]:
     profile = normalize_lead_profile(current_profile)
-    config = _lead_config(lead_config)
+    config = runtime_lead_config(lead_config)
     if profile.get("do_not_contact"):
         return False, "do_not_contact"
     do_not_contact_until = _parse_dt(profile.get("do_not_contact_until"))

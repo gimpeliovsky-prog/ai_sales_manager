@@ -26,6 +26,7 @@ from app.lead_management import (
     update_lead_profile_source,
     update_lead_profile_from_tool,
 )
+from app.lead_runtime_config import lead_config_from_ai_policy
 from app.license_client import get_license_client
 from app.llm_state_updater import parse_llm_state_update
 from app.outbound_channels import mark_sales_owner_notification, notify_sales_owner
@@ -243,13 +244,7 @@ def _handoff_target(tenant: dict[str, Any]) -> dict[str, Any]:
 
 def _lead_management_config(tenant: dict[str, Any]) -> dict[str, Any]:
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
-    lead_config = dict(ai_policy.get("lead_management")) if isinstance(ai_policy.get("lead_management"), dict) else {}
-    catalog_policy = ai_policy.get("catalog") if isinstance(ai_policy.get("catalog"), dict) else {}
-    if isinstance(catalog_policy.get("uom_aliases"), dict) and not isinstance(lead_config.get("uom_aliases"), dict):
-        lead_config["uom_aliases"] = catalog_policy.get("uom_aliases")
-    if isinstance(catalog_policy.get("uom_labels"), dict) and not isinstance(lead_config.get("uom_labels"), dict):
-        lead_config["uom_labels"] = catalog_policy.get("uom_labels")
-    return lead_config
+    return lead_config_from_ai_policy(ai_policy)
 
 
 def _playbook_version(tenant: dict[str, Any]) -> str | None:

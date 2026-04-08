@@ -13,6 +13,7 @@ from app.lead_management import (
     mark_stalled_if_needed,
     normalize_lead_profile,
 )
+from app.lead_runtime_config import lead_config_from_ai_policy
 from app.license_client import get_license_client
 from app.outbound_channels import mark_followup_attempt, mark_sales_owner_notification, notify_sales_owner, send_followup_message
 from app.sales_governance import evaluate_sla_breaches, record_new_sla_breaches
@@ -251,7 +252,7 @@ class LeadFollowupWorker:
         try:
             policy_response = await get_license_client().get_ai_policy(company_code)
             ai_policy = policy_response.get("ai_policy") if isinstance(policy_response.get("ai_policy"), dict) else {}
-            lead_config = ai_policy.get("lead_management") if isinstance(ai_policy.get("lead_management"), dict) else {}
+            lead_config = lead_config_from_ai_policy(ai_policy)
             config.update(lead_config)
             if isinstance(ai_policy.get("sales_policy"), dict):
                 config["sales_policy"] = ai_policy["sales_policy"]
