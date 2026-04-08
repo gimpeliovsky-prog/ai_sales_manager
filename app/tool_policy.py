@@ -15,6 +15,18 @@ def _deny(tool_name: str, reason: str, next_action: str) -> dict[str, Any]:
     }
 
 
+def _tool_enabled_for_tenant(tool_name: str, allowed_tools: Any) -> bool:
+    if not isinstance(allowed_tools, list) or not allowed_tools:
+        return True
+    normalized = {str(item).strip() for item in allowed_tools if str(item).strip()}
+    if tool_name in normalized:
+        return True
+    supporting_order_tools = {"update_sales_order", "send_sales_order_pdf", "create_invoice"}
+    if tool_name == "get_sales_order_status" and normalized.intersection(supporting_order_tools):
+        return True
+    return False
+
+
 def evaluate_tool_call(
     *,
     tool_name: str,
@@ -34,7 +46,7 @@ def evaluate_tool_call(
         )
 
     allowed_tools = ai_policy.get("allowed_tools")
-    if isinstance(allowed_tools, list) and allowed_tools and tool_name not in allowed_tools:
+    if not _tool_enabled_for_tenant(tool_name, allowed_tools):
         return _deny(
             tool_name,
             f"Tool '{tool_name}' is not enabled for this tenant.",
