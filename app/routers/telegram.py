@@ -6,6 +6,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Path, Request
 
 from app.agent import get_intro_message, process_message_result
+from app.config import get_settings
 from app.i18n import text as i18n_text
 from app.lead_management import apply_sales_owner_action, build_lead_event_payload, normalize_telegram_username
 from app.license_client import get_license_client
@@ -22,6 +23,7 @@ from app.session_store import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+_DEBUG_CATALOG_COMMAND_RE = re.compile(r"^/debug_catalog(?:\s+(?P<secret>\S+))?\s*$", re.IGNORECASE)
 
 _ORDER_PDF_RE = re.compile(
     r"^(?:/order|send me order|send order|send my order|order pdf|order file|пришли заказ|отправь заказ)$",
@@ -190,6 +192,42 @@ def _temporary_error_text(lang: str) -> str:
     return texts.get(lang, texts["en"])
 
 
+def _matches_debug_catalog_command(text: str, secret: str) -> bool:
+    configured_secret = str(secret or "").strip()
+    if not configured_secret:
+        return False
+    match = _DEBUG_CATALOG_COMMAND_RE.match(str(text or "").strip())
+    if not match:
+        return False
+    return str(match.group("secret") or "").strip() == configured_secret
+
+
+async def _debug_catalog_preview_text(*, lc, tenant: dict, lang: str, limit: int) -> str:
+    result = await lc.get_items(
+        str(tenant.get("company_code") or ""),
+        None,
+        None,
+        None if lang == "auto" else lang,
+    )
+    items = result.get("items") if isinstance(result, dict) else None
+    if not isinstance(items, list) or not items:
+        return "Catalog returned no items for this tenant."
+    lines = [f"Catalog preview, first {min(limit, len(items))} items:"]
+    for index, item in enumerate(items[: max(1, limit)], start=1):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("display_item_name") or item.get("item_name") or item.get("item_code") or "").strip()
+        item_code = str(item.get("item_code") or "").strip()
+        item_group = str(item.get("item_group") or "").strip()
+        line = f"{index}. {name or 'Unnamed item'}"
+        if item_code:
+            line += f" [{item_code}]"
+        if item_group:
+            line += f" ({item_group})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _owner_action_text(action: str) -> str:
     if action == "accept":
         return "Лид принят в работу."
@@ -312,6 +350,7 @@ async def telegram_webhook(
 ):
     _ = x_telegram_bot_api_secret_token
     lc = get_license_client()
+    settings = get_settings()
     data = await request.json()
     callback_query = data.get("callback_query")
     if callback_query:
@@ -461,6 +500,16 @@ async def telegram_webhook(
     if text in ("/reset", "/новый"):
         await clear_session("telegram", chat_id)
         result = {"text": get_intro_message(greeting_lang), "documents": []}
+    elif _matches_debug_catalog_command(text, settings.telegram_debug_catalog_secret):
+        result = {
+            "text": await _debug_catalog_preview_text(
+                lc=lc,
+                tenant=tenant,
+                lang=greeting_lang,
+                limit=max(1, int(settings.telegram_debug_catalog_limit or 5)),
+            ),
+            "documents": [],
+        }
     elif is_sales_owner_chat and text in {"/start", "/owner", "/sales_owner"}:
         result = {
             "text": "Sales owner Telegram chat registered for AI lead handoff.",

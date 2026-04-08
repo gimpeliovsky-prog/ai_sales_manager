@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     sales_dashboard_read_token: str = ""
     sales_dashboard_manager_token: str = ""
     sales_dashboard_admin_token: str = ""
+    telegram_debug_catalog_secret: str = ""
+    telegram_debug_catalog_limit: int = 5
 
 
 @lru_cache
