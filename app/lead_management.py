@@ -5,6 +5,17 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.lead_lexicon import (
+    browse_scaffolding_regex,
+    commercial_cue_regex,
+    contact_intro_regex,
+    generic_product_tokens,
+    lexicon_terms,
+    product_interest_filler_terms,
+    product_interest_noise_terms,
+    signal_terms as lexicon_signal_terms,
+    yes_regex,
+)
 from app.uom_semantics import canonical_uom, uom_aliases
 
 LEAD_STATUSES = {
@@ -264,6 +275,16 @@ DEFAULT_SIGNAL_TERMS: dict[str, list[str]] = {
     ],
 }
 _CURRENCY_RE = re.compile(r"[$€₪£¥₽]|(?:\b(?:usd|eur|ils|nis|rub|aed|sar)\b)", re.IGNORECASE)
+
+# Data-driven lexicon overrides. New languages should be added under
+# app/lexicons/lead_management/*.json rather than here in Python code.
+_BROWSE_SCAFFOLDING_RE = browse_scaffolding_regex()
+_YES_RE = yes_regex()
+_GENERIC_PRODUCT_TOKENS = generic_product_tokens()
+_PRODUCT_INTEREST_NOISE_TERMS = product_interest_noise_terms()
+_PRODUCT_INTEREST_FILLER_TERMS = product_interest_filler_terms()
+_CONTACT_INTRO_RE = re.compile(rf"(?is)(?:{contact_intro_regex().pattern})[:\s-]*")
+_COMMERCIAL_CUE_RE = re.compile(rf"(?is)(?:{commercial_cue_regex().pattern}).*")
 
 
 def empty_lead_profile() -> dict[str, Any]:
@@ -628,6 +649,27 @@ def _single_item_uom_terms(config: dict[str, Any] | None) -> dict[str, list[str]
     return uom_aliases(_uom_config(config, "single_item_uom_terms"))
 
 
+def _single_item_cleanup_terms(config: dict[str, Any] | None) -> list[str]:
+    terms = list(lexicon_terms("single_item_cleanup_terms"))
+    configured_terms = _lead_config(config).get("single_item_cleanup_terms")
+    if isinstance(configured_terms, list):
+        terms.extend(str(term).strip() for term in configured_terms if str(term).strip())
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        key = str(term or "").strip().casefold()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(str(term).strip())
+    return deduped
+
+
+def _phrase_term_pattern(term: str) -> str:
+    escaped = re.escape(str(term or "").strip()).replace(r"\ ", r"\s+")
+    return rf"(?<!\w){escaped}(?!\w)"
+
+
 def _strip_product_interest_noise(text: str, config: dict[str, Any] | None) -> str:
     normalized = str(text or "")
     dynamic_terms: list[str] = []
@@ -635,7 +677,7 @@ def _strip_product_interest_noise(text: str, config: dict[str, Any] | None) -> s
         dynamic_terms.extend(_configured_terms(config, signal))
     terms = [term for term in [*_PRODUCT_INTEREST_NOISE_TERMS, *dynamic_terms] if str(term or "").strip()]
     for term in sorted({str(term).strip() for term in terms}, key=len, reverse=True):
-        normalized = re.sub(rf"(?<!\w){re.escape(term)}(?!\w)", " ", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(_phrase_term_pattern(term), " ", normalized, flags=re.IGNORECASE)
     return normalized
 
 
@@ -663,12 +705,8 @@ def _normalize_single_item_interest(text: str, config: dict[str, Any] | None) ->
         return None
     normalized = raw
     normalized = re.sub(_BROWSE_SCAFFOLDING_RE, " ", normalized)
-    normalized = re.sub(r"\b(?:i am looking for|i'm looking for|looking for|i want|want|need)\b", " ", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\b(?:add|also add|also|include|put)\b", " ", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\b(?:to|into|in)\s+(?:this|my|the|current|existing)?\s*order\b", " ", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\b(?:this|my|the|current|existing)\s+order\b", " ", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\borders?\b", " ", normalized, flags=re.IGNORECASE)
-    normalized = re.sub(r"\b(?:a|an|the)\b", " ", normalized, flags=re.IGNORECASE)
+    for term in sorted({term for term in _single_item_cleanup_terms(config) if term}, key=len, reverse=True):
+        normalized = re.sub(_phrase_term_pattern(term), " ", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"\d+(?:[.,]\d+)?", " ", normalized)
     for term in sorted({str(term).strip() for term in _PRODUCT_INTEREST_FILLER_TERMS if str(term).strip()}, key=len, reverse=True):
         normalized = re.sub(rf"(?<!\w){re.escape(term)}(?!\w)", " ", normalized, flags=re.IGNORECASE)
@@ -689,8 +727,8 @@ def normalize_catalog_lookup_query(text: str | None, config: dict[str, Any] | No
         return candidate
     fallback = _strip_product_interest_noise(semantic or str(text or ""), config)
     fallback = re.sub(_BROWSE_SCAFFOLDING_RE, " ", fallback)
-    fallback = re.sub(r"\b(?:i am looking for|i'm looking for|looking for|i want|want|need)\b", " ", fallback, flags=re.IGNORECASE)
-    fallback = re.sub(r"\b(?:a|an|the)\b", " ", fallback, flags=re.IGNORECASE)
+    for term in sorted({term for term in _single_item_cleanup_terms(config) if term}, key=len, reverse=True):
+        fallback = re.sub(_phrase_term_pattern(term), " ", fallback, flags=re.IGNORECASE)
     fallback = re.sub(r"\s+", " ", fallback).strip(" ,.;:-")
     return _clean_text(fallback, limit=160)
 
@@ -784,7 +822,7 @@ def _should_replace_product_interest(
 
 
 def _configured_terms(config: dict[str, Any] | None, signal: str) -> list[str]:
-    terms = list(DEFAULT_SIGNAL_TERMS.get(signal, []))
+    terms = list(lexicon_signal_terms(signal))
     configured_terms = _lead_config(config).get("signal_terms")
     if isinstance(configured_terms, dict):
         extra_terms = configured_terms.get(signal)
@@ -820,7 +858,7 @@ def _signal_matches(text: str, signal: str, config: dict[str, Any] | None = None
     if signal == "price" and _CURRENCY_RE.search(text or ""):
         return True
     for term in _configured_terms(config, signal):
-        if term.casefold() in normalized:
+        if re.search(_phrase_term_pattern(term), text or "", re.IGNORECASE):
             return True
     for pattern in _configured_regexes(config, signal):
         try:
