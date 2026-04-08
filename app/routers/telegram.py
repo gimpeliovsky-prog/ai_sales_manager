@@ -206,6 +206,17 @@ async def _debug_catalog_preview_text(*, lc, tenant: dict, lang: str, limit: int
             limit=max(1, int(limit)),
             enrich=False,
         )
+    except httpx.HTTPStatusError as exc:
+        detail = ""
+        try:
+            payload = exc.response.json()
+            detail = str(payload.get("detail") or "").strip()
+        except Exception:
+            detail = exc.response.text.strip()[:300] if exc.response is not None else ""
+        logger.warning("Telegram debug catalog preview failed: %s", exc)
+        if detail:
+            return f"Catalog debug request failed: {detail}"
+        return f"Catalog debug request failed: {exc}"
     except Exception as exc:
         logger.warning("Telegram debug catalog preview failed: %s", exc)
         return f"Catalog debug request failed: {exc}"
