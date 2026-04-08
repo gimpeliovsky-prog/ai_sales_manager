@@ -6,7 +6,7 @@ import httpx
 
 from app.catalog_localization import catalog_lang as _catalog_lang, localize_catalog_result as _localize_catalog_result
 from app.i18n import text as i18n_text
-from app.interaction_patterns import has_add_to_order_intent, has_explicit_confirmation
+from app.interaction_patterns import has_add_to_order_intent, has_explicit_confirmation, has_order_change_intent
 from app.lead_management import normalize_catalog_lookup_query
 from app.license_client import LicenseClient
 from app.sales_policy import (
@@ -90,24 +90,26 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "name": "update_sales_order",
-        "description": "Add or update items in an existing draft sales order. If sales_order_name is missing, use the active order from the current conversation. Do not use this unless the customer explicitly asks to add/update the current order or clearly confirms the change.",
+        "description": "Modify an existing draft sales order. Before applying any change, check the current sales order status. Supported item actions are add, update, and remove. If sales_order_name is missing, use the active order from the current conversation. Use this only when the customer explicitly asks to change the current order or clearly confirms the change.",
         "parameters": {
             "type": "object",
             "properties": {
                 "sales_order_name": {"type": "string", "description": "Optional existing sales order name. Defaults to the active order in the conversation."},
                 "items": {
                     "type": "array",
-                    "description": "Items to add or update in the order.",
+                    "description": "Order correction operations. For add/update use item_code. For remove, send item_code or row_name.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "item_code": {"type": "string", "description": "ERP item code from the catalog."},
-                            "qty": {"type": "number", "description": "Customer-confirmed quantity to add/update."},
+                            "row_name": {"type": "string", "description": "Optional existing Sales Order Item row name when updating or removing a specific row."},
+                            "action": {"type": "string", "description": "One of add, update, remove. Defaults to add."},
+                            "qty": {"type": "number", "description": "Customer-confirmed quantity for add/update. Omit for remove."},
                             "rate": {"type": "number", "description": "Optional item rate only when tool-backed or explicitly provided."},
                             "uom": {"type": "string", "description": "Requested UOM from the catalog result."},
                             "conversion_factor": {"type": "number", "description": "Conversion factor for non-stock UOM from the catalog result."},
                         },
-                        "required": ["item_code", "qty"],
+                        "required": ["item_code"],
                         "additionalProperties": False,
                     },
                 },
@@ -195,11 +197,20 @@ def _has_add_to_order_intent(user_text: str) -> bool:
     return has_add_to_order_intent(user_text)
 
 
+def _has_order_change_intent(user_text: str) -> bool:
+    return has_order_change_intent(user_text)
+
+
 def _items_have_qty(items: list[dict[str, Any]] | None) -> bool:
     if not isinstance(items, list) or not items:
         return False
     for item in items:
-        qty = item.get("qty") if isinstance(item, dict) else None
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action") or "add").strip().casefold()
+        if action in {"remove", "delete"}:
+            return True
+        qty = item.get("qty")
         if isinstance(qty, (int, float)) and qty > 0:
             return True
     return False
@@ -326,7 +337,12 @@ async def _normalize_order_items_uoms(
             normalized_items.append(item)
             continue
         updated = dict(item)
+        action = str(updated.get("action") or "add").strip().casefold() or "add"
+        updated["action"] = action
         item_code = str(updated.get("item_code") or "").strip()
+        if action in {"remove", "delete"}:
+            normalized_items.append(updated)
+            continue
         requested_uom = str(updated.get("uom") or fallback_uom or "").strip()
         if not item_code or not requested_uom:
             normalized_items.append(updated)
@@ -492,7 +508,8 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
             return {"error": i18n_text("tool_error.no_active_order", current_lang, ai_policy=ai_policy), "error_code": "no_active_order"}
         if not _items_have_qty(inp.get("items")):
             return {"error": i18n_text("tool_error.add_to_order_qty_required", current_lang, ai_policy=ai_policy), "error_code": "add_to_order_qty_required"}
-        if not _has_add_to_order_intent(user_text) and not (_has_explicit_confirmation(user_text) or confirmation_override is True):
+        correction_requested = str((lead_profile or {}).get("order_correction_status") or "").strip() == "requested"
+        if not (_has_order_change_intent(user_text) or correction_requested or _has_explicit_confirmation(user_text) or confirmation_override is True):
             return {"error": i18n_text("tool_error.add_to_order_confirmation_required", current_lang, ai_policy=ai_policy), "error_code": "add_to_order_confirmation_required"}
         normalized_items_result = await _normalize_order_items_uoms(
             items=inp.get("items") or [],

@@ -170,8 +170,8 @@ def evaluate_tool_call(
         if not has_items:
             return _deny(
                 tool_name,
-                "Sales order update requires items to add.",
-                "Ask what item and quantity should be added.",
+                "Sales order update requires at least one correction operation.",
+                "Ask which order line should be added, updated, or removed.",
             )
         if needs_multi_item_uom_confirmation:
             assumed_uom = str(lead_profile.get("requested_items_assumed_uom") or "box")

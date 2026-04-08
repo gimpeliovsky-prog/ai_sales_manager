@@ -52,6 +52,14 @@ ADD_TO_ORDER_RE = re.compile(
 )
 
 
+ORDER_CHANGE_RE = re.compile(
+    r"\b(add to order|append|add more|change order|update order|modify order|edit order|"
+    r"change quantity|update quantity|reduce quantity|increase quantity|"
+    r"remove item|delete item|remove from order|delete from order)\b",
+    re.IGNORECASE,
+)
+
+
 def has_explicit_confirmation(user_text: str) -> bool:
     text = user_text or ""
     if NEGATIVE_CONFIRM_RE.search(text):
@@ -61,3 +69,8 @@ def has_explicit_confirmation(user_text: str) -> bool:
 
 def has_add_to_order_intent(user_text: str) -> bool:
     return bool(ADD_TO_ORDER_RE.search(user_text or ""))
+
+
+def has_order_change_intent(user_text: str) -> bool:
+    text = user_text or ""
+    return bool(ADD_TO_ORDER_RE.search(text) or ORDER_CHANGE_RE.search(text))
