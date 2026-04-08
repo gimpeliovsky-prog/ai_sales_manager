@@ -603,7 +603,7 @@ def _strip_product_interest_noise(text: str, config: dict[str, Any] | None) -> s
     dynamic_terms: list[str] = []
     for signal in ("urgency", "delivery", "quote"):
         dynamic_terms.extend(_configured_terms(config, signal))
-    terms = [term for term in [*_PRODUCT_INTEREST_NOISE_TERMS, *_PRODUCT_INTEREST_FILLER_TERMS, *dynamic_terms] if str(term or "").strip()]
+    terms = [term for term in [*_PRODUCT_INTEREST_NOISE_TERMS, *dynamic_terms] if str(term or "").strip()]
     for term in sorted({str(term).strip() for term in terms}, key=len, reverse=True):
         normalized = re.sub(rf"(?<!\w){re.escape(term)}(?!\w)", " ", normalized, flags=re.IGNORECASE)
     return normalized

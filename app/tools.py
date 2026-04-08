@@ -207,22 +207,11 @@ def _normalize_match_text(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9?-??-???\u0590-\u05FF\u0600-\u06FF]+", " ", text or "").strip().lower()
 
 
-_QUERY_STOPWORDS = {
-    "a", "an", "the", "i", "im", "i'm", "me", "my", "you", "your", "we", "our",
-    "want", "need", "looking", "look", "for", "show", "have", "has", "do", "does",
-    "what", "which", "who", "where", "when", "how", "please", "can", "could", "would",
-    "product", "products", "item", "items", "model", "models", "variant", "variants",
-    "option", "options", "type", "types", "name", "exact", "another", "until", "know",
-    "ok", "okay", "hi", "hello", "hey", "thanks", "thank", "buy", "order",
-}
-
-
 def _query_tokens(text: str | None) -> list[str]:
-    return [
-        token
-        for token in _normalize_match_text(text or "").split()
-        if len(token) >= 3 and token not in _QUERY_STOPWORDS
-    ]
+    normalized_query = normalize_catalog_lookup_query(text)
+    if not normalized_query:
+        normalized_query = text or ""
+    return [token for token in _normalize_match_text(normalized_query).split() if len(token) >= 3]
 
 
 def _build_search_candidates(*texts: str | None) -> list[str]:
