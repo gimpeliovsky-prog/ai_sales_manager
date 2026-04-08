@@ -115,7 +115,6 @@ def _buyer_context_lines(
     lines: list[str] = []
     if erp_customer_id:
         lines.append("The buyer is already identified in this conversation.")
-        lines.append(f"ERP customer id: {erp_customer_id}")
         if buyer_name:
             lines.append(f"Known buyer name: {buyer_name}")
     if last_sales_order_name:
@@ -124,19 +123,19 @@ def _buyer_context_lines(
     recent_invoices = recent_sales_invoices if isinstance(recent_sales_invoices, list) else []
     if recent_orders:
         order_summaries: list[str] = []
-        for row in recent_orders[:3]:
+        for row in recent_orders[:2]:
             if isinstance(row, dict):
                 order_summaries.append(
-                    f"{row.get('name')} ({row.get('transaction_date')}, {row.get('status')}, {row.get('grand_total')} {row.get('currency')})"
+                    f"{row.get('name')} ({row.get('status')}, {row.get('grand_total')} {row.get('currency')})"
                 )
         if order_summaries:
             lines.append(f"Recent sales orders for this buyer: {'; '.join(order_summaries)}")
     if recent_invoices:
         invoice_summaries: list[str] = []
-        for row in recent_invoices[:3]:
+        for row in recent_invoices[:2]:
             if isinstance(row, dict):
                 invoice_summaries.append(
-                    f"{row.get('name')} ({row.get('posting_date')}, {row.get('status')}, {row.get('grand_total')} {row.get('currency')})"
+                    f"{row.get('name')} ({row.get('status')}, {row.get('grand_total')} {row.get('currency')})"
                 )
         if invoice_summaries:
             lines.append(f"Recent sales invoices for this buyer: {'; '.join(invoice_summaries)}")
@@ -149,42 +148,22 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
     lines: list[str] = []
     for key, label in [
         ("status", "Lead status"),
-        ("lead_id", "Lead id"),
-        ("source_channel", "Lead source channel"),
-        ("source_campaign", "Lead source campaign"),
-        ("source_utm_source", "UTM source"),
-        ("source_utm_campaign", "UTM campaign"),
-        ("score", "Lead score"),
-        ("temperature", "Lead temperature"),
         ("next_action", "Recommended next action"),
-        ("followup_strategy", "Follow-up strategy"),
         ("qualification_priority", "Qualification priority"),
-        ("qualification_priority_reason", "Qualification priority reason"),
-        ("created_at", "Lead created at"),
-        ("qualified_at", "Lead qualified at"),
-        ("hot_at", "Lead became hot at"),
         ("product_interest", "Product interest"),
         ("product_resolution_status", "Product resolution status"),
         ("catalog_item_code", "Selected catalog item code"),
         ("catalog_item_name", "Selected catalog item name"),
-        ("catalog_candidate_count", "Catalog candidate count"),
         ("catalog_lookup_query", "Latest catalog lookup query"),
         ("catalog_lookup_status", "Latest catalog lookup status"),
-        ("catalog_lookup_match_count", "Latest catalog lookup match count"),
-        ("catalog_lookup_at", "Latest catalog lookup time"),
         ("availability_item_code", "Latest availability item code"),
         ("availability_item_name", "Latest availability item name"),
         ("availability_in_stock", "Latest availability in stock"),
         ("availability_total_available_qty", "Latest availability total available quantity"),
         ("availability_stock_uom", "Latest availability stock unit"),
-        ("availability_warehouse", "Latest availability warehouse"),
-        ("availability_default_warehouse", "Latest availability default warehouse"),
-        ("availability_known_warehouses", "Latest availability known warehouses"),
         ("availability_needs_warehouse_selection", "Latest availability needs warehouse selection"),
-        ("availability_checked_at", "Latest availability check time"),
         ("quantity", "Quantity"),
         ("uom", "Unit"),
-        ("requested_item_count", "Requested item count"),
         ("requested_items_have_quantities", "Requested items have quantities"),
         ("requested_items_need_uom_confirmation", "Requested items need UOM confirmation"),
         ("requested_items_assumed_uom", "Requested items assumed UOM"),
@@ -192,24 +171,16 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
         ("urgency", "Urgency"),
         ("delivery_need", "Delivery need"),
         ("decision_status", "Decision status"),
-        ("duplicate_of_lead_id", "Duplicate of lead id"),
-        ("dedupe_reason", "Duplicate detection reason"),
-        ("merged_into_lead_id", "Merged into lead id"),
         ("order_correction_status", "Order correction status"),
         ("target_order_id", "Target order id for correction"),
         ("correction_type", "Order correction type"),
+        ("active_order_state", "Active order state"),
+        ("active_order_can_modify", "Active order can modify"),
         ("quote_status", "Quote status"),
-        ("quote_id", "Quote id"),
-        ("quote_total", "Quote total"),
-        ("quote_currency", "Quote currency"),
-        ("expected_revenue", "Expected revenue"),
         ("order_total", "Order total"),
         ("currency", "Currency"),
-        ("won_revenue", "Won revenue"),
-        ("followup_count", "Follow-up count"),
-        ("lost_reason", "Lost reason"),
-        ("sales_owner_status", "Sales owner status"),
-        ("playbook_version", "Playbook version"),
+        ("score", "Lead score"),
+        ("temperature", "Lead temperature"),
     ]:
         value = lead_profile.get(key)
         if value not in (None, "", []):
@@ -217,7 +188,7 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
     if lead_profile.get("price_sensitivity"):
         lines.append("Customer appears price-sensitive.")
     if isinstance(lead_profile.get("requested_items"), list) and lead_profile.get("requested_items"):
-        lines.append(f"Requested items: {lead_profile['requested_items']}")
+        lines.append(f"Requested items: {lead_profile['requested_items'][:3]}")
     if lead_profile.get("do_not_contact"):
         lines.append("Customer must not receive proactive follow-up.")
     return lines

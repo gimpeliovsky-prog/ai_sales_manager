@@ -46,7 +46,8 @@ logger = logging.getLogger(__name__)
 _PHONE_RE = re.compile(r"(\+?\d[\d\s\-\(\)]{7,}\d)")
 _MAX_OPENAI_INPUT_ITEMS = 48
 _MAX_OPENAI_INPUT_BYTES = 180_000
-_MAX_OPENAI_HISTORY_ITEMS = 16
+_MAX_OPENAI_HISTORY_ITEMS = 10
+_MAX_OPENAI_MESSAGE_CHARS = 700
 
 def _empty_result() -> dict[str, Any]:
     return {"text": "...", "documents": []}
@@ -503,7 +504,9 @@ def _history_to_openai_input(messages: list[dict[str, Any]]) -> list[dict[str, A
         if role not in {"user", "assistant"}:
             continue
         if isinstance(content, str):
-            items.append({"role": role, "content": content})
+            compact = _preview_text(content, limit=_MAX_OPENAI_MESSAGE_CHARS)
+            if compact:
+                items.append({"role": role, "content": compact})
             continue
         if isinstance(content, list):
             text_parts = []
@@ -511,9 +514,9 @@ def _history_to_openai_input(messages: list[dict[str, Any]]) -> list[dict[str, A
                 if isinstance(block, dict) and block.get("type") in {"text", "output_text"}:
                     text = block.get("text")
                     if isinstance(text, str) and text.strip():
-                        text_parts.append(text)
+                        text_parts.append(_preview_text(text, limit=_MAX_OPENAI_MESSAGE_CHARS))
             if text_parts:
-                items.append({"role": role, "content": "\n".join(text_parts)})
+                items.append({"role": role, "content": _preview_text("\n".join(text_parts), limit=_MAX_OPENAI_MESSAGE_CHARS)})
     return items
 
 def _estimate_input_items_size(input_items: list[dict[str, Any]]) -> int:
