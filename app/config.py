@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
     session_ttl_seconds: int = 86400
     public_base_url: str = ""
+    session_secret: str = "ai-sales-manager-session-secret"
     lead_followup_worker_enabled: bool = True
     lead_followup_scan_interval_seconds: int = 300
     lead_followup_scan_batch_size: int = 500

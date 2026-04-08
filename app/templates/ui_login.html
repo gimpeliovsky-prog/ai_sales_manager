@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="topbar">
+    <div class="brand">
+      <h1>Sales UI</h1>
+      <p>Internal access to dialogs, lead quality, and history.</p>
+    </div>
+    <div class="pill mono">/ui/login</div>
+  </div>
+
+  {% if message %}
+    <div class="notice">{{ message }}</div>
+  {% endif %}
+  {% if error %}
+    <div class="notice error">{{ error }}</div>
+  {% endif %}
+
+  <div class="panel section" style="max-width: 560px;">
+    <form method="post" class="stack">
+      <div class="field">
+        <label for="token">Dashboard token</label>
+        <input id="token" name="token" type="password" placeholder="Paste SALES_DASHBOARD_READ_TOKEN / MANAGER / ADMIN" autofocus>
+      </div>
+      <button type="submit">Open dashboard</button>
+    </form>
+    <p class="muted small" style="margin-top: 14px;">
+      Use read token for viewing, manager token for operational work, admin token for storage and pruning.
+    </p>
+  </div>
+{% endblock %}

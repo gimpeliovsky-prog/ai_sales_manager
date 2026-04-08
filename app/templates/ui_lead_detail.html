@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="topbar">
+    <div class="brand">
+      <h1>Lead detail</h1>
+      <p class="mono">{{ lead_id }}</p>
+    </div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <a class="button" href="/ui/leads{% if company_code %}?company_code={{ company_code }}{% endif %}">Back to list</a>
+      <a class="button" href="/ui/logout">Logout</a>
+    </div>
+  </div>
+
+  <div class="grid cards">
+    <div class="panel card">
+      <div class="label">Status</div>
+      <div class="value" style="font-size:24px;">{{ lead_profile.status or "none" }}</div>
+      <div class="muted small">Temperature: {{ lead_profile.temperature or "cold" }}</div>
+    </div>
+    <div class="panel card">
+      <div class="label">Buyer</div>
+      <div class="value" style="font-size:24px;">{{ lead.buyer_name or "-" }}</div>
+      <div class="muted small mono">{{ lead.buyer_phone or lead.erp_customer_id or "-" }}</div>
+    </div>
+    <div class="panel card">
+      <div class="label">Source</div>
+      <div class="value" style="font-size:24px;">{{ lead_profile.source_channel or lead.channel or "-" }}</div>
+      <div class="muted small">{{ lead_profile.source_utm_source or lead_profile.source_campaign or "-" }}</div>
+    </div>
+    <div class="panel card">
+      <div class="label">Owner</div>
+      <div class="value" style="font-size:24px;">{{ lead_profile.sales_owner_status or "not_notified" }}</div>
+      <div class="muted small">{{ lead_profile.sales_owner_accept_minutes if lead_profile.sales_owner_accept_minutes is not none else "-" }} min to accept</div>
+    </div>
+  </div>
+
+  <div class="split" style="margin-top: 18px;">
+    <div class="panel section">
+      <h2 style="margin-top:0;">Timeline</h2>
+      <div class="stack">
+        {% for item in timeline|reverse %}
+          <div class="bubble">
+            <div class="small muted mono">{{ item.at }}</div>
+            <div><strong>{{ item.event_type }}</strong></div>
+            <div class="muted small">status={{ item.status or "-" }} | next={{ item.next_action or "-" }} | owner={{ item.sales_owner_status or "-" }}</div>
+            {% if item.payload %}
+              <div class="small mono" style="margin-top:8px; white-space:pre-wrap;">{{ item.payload | tojson(indent=2) }}</div>
+            {% endif %}
+          </div>
+        {% else %}
+          <div class="notice">No timeline events yet.</div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="panel section">
+      <h2 style="margin-top:0;">Conversation</h2>
+      {% if session_loaded %}
+        <div class="muted small">Loaded from Redis session.</div>
+      {% else %}
+        <div class="notice">Active session is not available anymore. Showing persisted lead snapshot only.</div>
+      {% endif %}
+      <div class="stack" style="margin-top:12px;">
+        {% for message in messages %}
+          <div class="bubble {{ message.role }}">
+            <div class="small muted mono">{{ message.created_at }}</div>
+            <div class="small muted">{{ message.role }}{% if message.stage %} / {{ message.stage }}{% endif %}</div>
+            <div style="margin-top:6px; white-space:pre-wrap;">{{ message.content }}</div>
+          </div>
+        {% else %}
+          <div class="notice">No transcript available in the active session.</div>
+        {% endfor %}
+      </div>
+      <h3 style="margin-top:18px;">Lead profile</h3>
+      <div class="bubble">
+        <div class="small muted">Product: {{ lead_profile.product_interest or "-" }}</div>
+        <div class="small muted">Need: {{ lead_profile.need or "-" }}</div>
+        <div class="small muted">Quantity: {{ lead_profile.quantity or "-" }}</div>
+        <div class="small muted">UOM: {{ lead_profile.uom or "-" }}</div>
+        <div class="small muted">Next action: {{ lead_profile.next_action or "-" }}</div>
+        <div class="small muted">Follow-up strategy: {{ lead_profile.followup_strategy or "-" }}</div>
+        <div class="small muted">Quality score: {{ lead.conversation_quality_score or "-" }}</div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

@@ -4,14 +4,17 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
-from app.routers import sales_dashboard, telegram, webchat, whatsapp
+from app.config import get_settings
+from app.routers import sales_dashboard, sales_ui, telegram, webchat, whatsapp
 from app.lead_followup_worker import get_lead_followup_worker
 from app.sales_crm_sync_worker import get_sales_crm_sync_worker
 from app.sales_lead_repository import close_sales_lead_repository, init_sales_lead_repository
 from app.session_store import init_redis
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+settings = get_settings()
 
 
 @asynccontextmanager
@@ -32,11 +35,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Sales Manager", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, same_site="lax", https_only=False)
 
 app.include_router(telegram.router, prefix="/webhook/telegram")
 app.include_router(whatsapp.router, prefix="/webhook/whatsapp")
 app.include_router(webchat.router, prefix="/webhook/webchat")
 app.include_router(sales_dashboard.router, prefix="/sales")
+app.include_router(sales_ui.router, prefix="/ui")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -61,6 +66,7 @@ def root():
         <h1>AI Sales Manager</h1>
         <p>Backend API is running. This service does not include a full dashboard frontend yet.</p>
         <div class="card">
+          <p><a href="/ui">Open sales UI</a></p>
           <p><a href="/health">Health check</a></p>
           <p><a href="/docs">API docs</a></p>
           <p><code>GET /sales/summary?company_code=...</code> requires <code>X-AI-Agent-Token</code>.</p>
