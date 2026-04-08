@@ -37,17 +37,39 @@ from app.sales_lead_repository import get_sales_lead_repository
 from app.sales_quality import update_session_quality
 from app.sales_reporting import lead_snapshot
 from app.sales_timeline import append_lead_timeline_event
-from app.session_store import load_session, new_session, save_session, save_session_snapshot
+from app.session_store import load_session, new_session, save_session, save_session_snapshot, session_processing_lock
 from app.tool_policy import evaluate_tool_call
 from app.tools import TOOLS, execute_tool
 
 logger = logging.getLogger(__name__)
 
 _PHONE_RE = re.compile(r"(\+?\d[\d\s\-\(\)]{7,}\d)")
+_INTRO_NAME_PREFIX_RE = re.compile(
+    r"(?is)^\s*(?:"
+    r"hello|hi|hey|good\s+(?:day|morning|afternoon|evening)|"
+    r"привет|здравствуйте|добрый\s+\w+|"
+    r"שלום|shalom|"
+    r"مرحبا|أهلا|اهلا|السلام عليكم|"
+    r"my\s+name\s+is|name\s+is|i\s+am|i'm|call\s+me|"
+    r"меня\s+зовут|это|"
+    r"שמי|קוראים\s+לי|אני|"
+    r"اسمي|انا|أنا"
+    r")[\s,:-]*"
+)
+_INTRO_NAME_STOP_RE = re.compile(
+    r"(?is)\b(?:"
+    r"i\s+need|need|want|order|check|looking\s+for|interested\s+in|"
+    r"мне\s+нуж|нужен|нужна|хочу|интересует|заказ|провер|"
+    r"אני\s+צריך|אני\s+רוצה|צריך|רוצה|הזמנה|"
+    r"أريد|احتاج|أحتاج|طلب|please"
+    r")\b"
+)
+_PERSON_NAME_TOKEN_RE = re.compile(r"^[A-Za-zА-Яа-яЁё\u0590-\u05FF\u0600-\u06FF][A-Za-zА-Яа-яЁё\u0590-\u05FF\u0600-\u06FF'._-]*$")
 _MAX_OPENAI_INPUT_ITEMS = 48
 _MAX_OPENAI_INPUT_BYTES = 180_000
 _MAX_OPENAI_HISTORY_ITEMS = 10
 _MAX_OPENAI_MESSAGE_CHARS = 700
+_KNOWN_TOOL_NAMES = {str(tool.get("name") or "").strip() for tool in TOOLS if isinstance(tool, dict)}
 
 def _empty_result() -> dict[str, Any]:
     return {"text": "...", "documents": []}
@@ -524,6 +546,32 @@ def _normalize_phone(text: str) -> str | None:
     return normalized if len(re.sub(r"\D", "", normalized)) >= 10 else None
 
 
+def _clean_intro_name_candidate(text: str) -> str | None:
+    candidate = re.sub(r"\s+", " ", str(text or "")).strip(" ,.;:-")
+    if not candidate:
+        return None
+    candidate = _INTRO_NAME_PREFIX_RE.sub("", candidate).strip(" ,.;:-")
+    stop_match = _INTRO_NAME_STOP_RE.search(candidate)
+    if stop_match:
+        candidate = candidate[: stop_match.start()].strip(" ,.;:-")
+    if not candidate:
+        return None
+    chunks = [chunk.strip(" ,.;:-") for chunk in re.split(r"[,;|/]+", candidate) if chunk.strip(" ,.;:-")]
+    scored_candidates: list[tuple[int, str]] = []
+    for chunk in chunks or [candidate]:
+        tokens = [token for token in re.split(r"\s+", chunk) if token]
+        if not tokens or len(tokens) > 4:
+            continue
+        if not all(_PERSON_NAME_TOKEN_RE.match(token) for token in tokens):
+            continue
+        score = len(tokens) * 10 - len(chunk)
+        scored_candidates.append((score, " ".join(tokens)))
+    if not scored_candidates:
+        return None
+    scored_candidates.sort(reverse=True)
+    return scored_candidates[0][1]
+
+
 def _extract_intro_contact(user_text: str) -> tuple[str | None, str | None]:
     match = _PHONE_RE.search(user_text)
     if not match:
@@ -532,8 +580,7 @@ def _extract_intro_contact(user_text: str) -> tuple[str | None, str | None]:
     if not phone:
         return None, None
 
-    name = (user_text[: match.start()] + " " + user_text[match.end() :]).strip(" ,.;:-")
-    name = re.sub(r"\s+", " ", name).strip()
+    name = _clean_intro_name_candidate((user_text[: match.start()] + " " + user_text[match.end() :]).strip(" ,.;:-"))
     if not name:
         return None, None
     return name, phone
@@ -639,19 +686,57 @@ def _estimate_input_items_size(input_items: list[dict[str, Any]]) -> int:
     return len(json.dumps(input_items, ensure_ascii=False, default=str))
 
 
+def _group_input_items(input_items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    groups: list[list[dict[str, Any]]] = []
+    index = 0
+    while index < len(input_items):
+        item = input_items[index]
+        if not isinstance(item, dict):
+            groups.append([item])
+            index += 1
+            continue
+        if item.get("type") == "function_call":
+            group = [item]
+            call_id = str(item.get("call_id") or "").strip()
+            next_index = index + 1
+            if next_index < len(input_items):
+                next_item = input_items[next_index]
+                if (
+                    isinstance(next_item, dict)
+                    and next_item.get("type") == "function_call_output"
+                    and call_id
+                    and str(next_item.get("call_id") or "").strip() == call_id
+                ):
+                    group.append(next_item)
+                    next_index += 1
+            groups.append(group)
+            index = next_index
+            continue
+        groups.append([item])
+        index += 1
+    return groups
+
+
+def _flatten_input_groups(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for group in groups:
+        flattened.extend(group)
+    return flattened
+
+
 def _trim_input_items(input_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    trimmed = list(input_items)
+    groups = _group_input_items(list(input_items))
     removed = 0
-    if len(trimmed) > _MAX_OPENAI_HISTORY_ITEMS:
-        current_turn = trimmed[-1:]
-        history = trimmed[:-1]
-        removed += len(history) - (_MAX_OPENAI_HISTORY_ITEMS - len(current_turn))
-        trimmed = history[-(_MAX_OPENAI_HISTORY_ITEMS - len(current_turn)) :] + current_turn
+    if len(groups) > _MAX_OPENAI_HISTORY_ITEMS:
+        removed += len(groups) - _MAX_OPENAI_HISTORY_ITEMS
+        groups = groups[-_MAX_OPENAI_HISTORY_ITEMS:]
+    trimmed = _flatten_input_groups(groups)
     while len(trimmed) > _MAX_OPENAI_INPUT_ITEMS or _estimate_input_items_size(trimmed) > _MAX_OPENAI_INPUT_BYTES:
-        if len(trimmed) <= 2:
+        if len(groups) <= 1:
             break
-        trimmed.pop(0)
-        removed += 1
+        removed += len(groups[0])
+        groups.pop(0)
+        trimmed = _flatten_input_groups(groups)
     if removed:
         logger.warning(
             "Trimmed OpenAI input context",
@@ -1042,6 +1127,10 @@ def _build_confirmation_fallback_call(*, session: dict[str, Any], user_text: str
         return None
     if lead_profile.get("requested_items_need_uom_confirmation"):
         return None
+    if str(lead_profile.get("product_resolution_status") or "").strip() != "specific":
+        return None
+    if str(lead_profile.get("catalog_lookup_status") or "").strip() not in {"found", "unknown"}:
+        return None
 
     item_code = str(lead_profile.get("catalog_item_code") or "").strip()
     uom = str(lead_profile.get("uom") or "").strip()
@@ -1057,11 +1146,9 @@ def _build_confirmation_fallback_call(*, session: dict[str, Any], user_text: str
     correction_requested = str(lead_profile.get("order_correction_status") or "").strip() == "requested"
     last_intent = str(session.get("last_intent") or "").strip()
     if active_order_name and (last_intent == "add_to_order" or correction_requested or stage in {"invoice", "service", "closed"}):
-        inputs = {"sales_order_name": active_order_name, "items": items}
-        tool_name = "update_sales_order"
-    else:
-        inputs = {"items": items}
-        tool_name = "create_sales_order"
+        return None
+    inputs = {"items": items}
+    tool_name = "create_sales_order"
     return {
         "type": "function_call",
         "name": tool_name,
@@ -1070,16 +1157,31 @@ def _build_confirmation_fallback_call(*, session: dict[str, Any], user_text: str
     }
 
 
-def _tool_success_fallback_reply(tool_name: str, tool_result: dict[str, Any]) -> str | None:
+def _tool_success_fallback_reply(tool_name: str, tool_result: dict[str, Any], lang: str) -> str | None:
     if not isinstance(tool_result, dict) or tool_result.get("error"):
         return None
     order_name = str(tool_result.get("name") or "").strip()
     if tool_name == "create_sales_order" and order_name:
-        return f"Your order has been created as {order_name}. If you want, I can send the order PDF or create an invoice."
+        templates = {
+            "ru": f"Заказ {order_name} создан. При необходимости я могу отправить PDF заказа или помочь со счетом.",
+            "he": f"ההזמנה {order_name} נוצרה. אם תרצה, אוכל לשלוח את ה-PDF של ההזמנה או לעזור עם החשבונית.",
+            "ar": f"تم إنشاء الطلب {order_name}. إذا أردت، يمكنني إرسال ملف PDF للطلب أو المساعدة في الفاتورة.",
+        }
+        return templates.get(lang, f"Your order has been created as {order_name}. If you want, I can send the order PDF or create an invoice.")
     if tool_name == "update_sales_order" and order_name:
-        return f"I updated sales order {order_name}. If you want, I can send the updated order PDF."
+        templates = {
+            "ru": f"Я обновил заказ {order_name}. При необходимости могу отправить обновленный PDF.",
+            "he": f"עדכנתי את ההזמנה {order_name}. אם תרצה, אוכל לשלוח את ה-PDF המעודכן.",
+            "ar": f"قمت بتحديث أمر البيع {order_name}. إذا أردت، يمكنني إرسال ملف PDF المحدث.",
+        }
+        return templates.get(lang, f"I updated sales order {order_name}. If you want, I can send the updated order PDF.")
     if tool_name == "create_invoice" and order_name:
-        return f"I created invoice {order_name}."
+        templates = {
+            "ru": f"Я создал счет {order_name}.",
+            "he": f"יצרתי את החשבונית {order_name}.",
+            "ar": f"أنشأت الفاتورة {order_name}.",
+        }
+        return templates.get(lang, f"I created invoice {order_name}.")
     return None
 
 
@@ -1191,6 +1293,7 @@ async def _classify_state_with_llm(
             "behavior_class must be one of: direct_buyer, explorer, unclear_request, price_sensitive, frustrated, service_request, returning_customer, silent_or_low_signal. "
             "next_action must be one of: handoff_manager, fulfill_service_request, ask_need, show_matching_options, select_specific_item, ask_quantity, ask_unit, ask_delivery_timing, ask_contact, quote_or_clarify_price, confirm_order, recommend_next_step. "
             "lead_patch may include only these keys when clearly supported by the message and context: product_interest, quantity, uom, urgency, delivery_need, price_sensitivity, decision_status. "
+            "quantity must be a numeric value or null, never a string with unit words or approximations. "
             "Use next_action to express the single best next sales step after this message. "
             "Prefer show_matching_options or select_specific_item when the customer named only a broad product and asks what exists. "
             "Do not ask again for quantity or UOM when they are already known in the lead profile unless the customer changes them. "
@@ -1308,7 +1411,7 @@ async def _classify_order_confirmation_with_llm(
     return result
 
 
-async def process_message_result(
+async def _process_message_result_locked(
     channel: str,
     channel_uid: str,
     user_text: str,
@@ -1484,6 +1587,15 @@ async def process_message_result(
         behavior_class = fallback_behavior_class
         behavior_confidence = fallback_behavior_confidence
     if not intent:
+        intent = fallback_intent
+        intent_confidence = fallback_intent_confidence
+    elif (
+        fallback_intent
+        and fallback_intent != intent
+        and fallback_intent_confidence >= 0.9
+        and intent_confidence < 0.8
+        and fallback_intent in {"find_product", "browse_catalog", "confirm_order", "add_to_order", "service_request", "human_handoff"}
+    ):
         intent = fallback_intent
         intent_confidence = fallback_intent_confidence
     if behavior_class == "silent_or_low_signal" and intent == "find_product":
@@ -1950,75 +2062,76 @@ async def process_message_result(
 
                 confirmation_result: dict[str, Any] | None = None
                 confirmation_override: bool | None = None
-                if tool_name in {"create_sales_order", "update_sales_order"}:
-                    try:
-                        confirmation_result = await _classify_order_confirmation_with_llm(
-                            client=client,
-                            api_key=settings.openai_api_key,
-                            model=settings.openai_model,
-                            user_text=user_text,
-                            session=session,
-                            tool_name=tool_name,
-                            inputs=inputs,
-                            tenant=tenant,
-                        )
-                        min_confidence = _confirmation_min_confidence(tenant)
-                        if _confirmation_classifier_enabled(tenant):
-                            if (
-                                confirmation_result.get("confirmed")
-                                and float(confirmation_result.get("confidence") or 0) >= min_confidence
-                            ):
-                                confirmation_override = True
-                            else:
-                                confirmation_override = False
-                        elif (
-                            confirmation_result.get("confirmed")
-                            and float(confirmation_result.get("confidence") or 0) >= min_confidence
-                        ):
-                            confirmation_override = True
-                        _log_event(
-                            "order_confirmation_classified",
-                            company_code=company_code,
-                            channel=channel,
-                            channel_uid=channel_uid,
-                            tool_name=tool_name,
-                            min_confidence=min_confidence,
-                            classification=confirmation_result,
-                        )
-                    except Exception as exc:
-                        confirmation_result = {"confirmed": False, "confidence": 0.0, "reason": str(exc), "source": "error"}
-                        logger.warning("Order confirmation classifier failed: %s", exc)
-
-                policy_result = evaluate_tool_call(
-                    tool_name=tool_name,
-                    inputs=inputs,
-                    session=session,
-                    tenant=tenant,
-                    user_text=user_text,
-                    confirmation_override=confirmation_override,
-                )
-                if policy_result:
-                    parsed_result = policy_result
+                if tool_name not in _KNOWN_TOOL_NAMES:
+                    parsed_result = {"error": f"Unknown tool: {tool_name}", "error_code": "unknown_tool_name"}
                 else:
-                    result_str = await execute_tool(
-                        name=tool_name,
+                    if tool_name in {"create_sales_order", "update_sales_order"}:
+                        try:
+                            confirmation_result = await _classify_order_confirmation_with_llm(
+                                client=client,
+                                api_key=settings.openai_api_key,
+                                model=settings.openai_model,
+                                user_text=user_text,
+                                session=session,
+                                tool_name=tool_name,
+                                inputs=inputs,
+                                tenant=tenant,
+                            )
+                            min_confidence = _confirmation_min_confidence(tenant)
+                            confirmation_confidence = float(confirmation_result.get("confidence") or 0)
+                            confirmation_confirmed = bool(confirmation_result.get("confirmed"))
+                            explicit_confirmation = has_explicit_confirmation(user_text)
+                            if confirmation_confirmed and confirmation_confidence >= min_confidence:
+                                confirmation_override = True
+                            elif (
+                                _confirmation_classifier_enabled(tenant)
+                                and not confirmation_confirmed
+                                and confirmation_confidence >= min_confidence
+                                and not explicit_confirmation
+                            ):
+                                confirmation_override = False
+                            _log_event(
+                                "order_confirmation_classified",
+                                company_code=company_code,
+                                channel=channel,
+                                channel_uid=channel_uid,
+                                tool_name=tool_name,
+                                min_confidence=min_confidence,
+                                classification=confirmation_result,
+                            )
+                        except Exception as exc:
+                            confirmation_result = {"confirmed": False, "confidence": 0.0, "reason": str(exc), "source": "error"}
+                            logger.warning("Order confirmation classifier failed: %s", exc)
+                    policy_result = evaluate_tool_call(
+                        tool_name=tool_name,
                         inputs=inputs,
-                        company_code=company_code,
-                        erp_customer_id=session.get("erp_customer_id"),
-                        active_sales_order_name=session.get("last_sales_order_name"),
-                        current_lang=current_lang,
+                        session=session,
+                        tenant=tenant,
                         user_text=user_text,
-                        channel=channel,
-                        channel_uid=channel_uid,
-                        lc=lc,
-                        ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
-                        lead_profile=session.get("lead_profile") if isinstance(session.get("lead_profile"), dict) else None,
                         confirmation_override=confirmation_override,
                     )
-                    try:
-                        parsed_result = json.loads(result_str)
-                    except json.JSONDecodeError:
-                        parsed_result = {"raw_result": result_str}
+                    if policy_result:
+                        parsed_result = policy_result
+                    else:
+                        result_str = await execute_tool(
+                            name=tool_name,
+                            inputs=inputs,
+                            company_code=company_code,
+                            erp_customer_id=session.get("erp_customer_id"),
+                            active_sales_order_name=session.get("last_sales_order_name"),
+                            current_lang=current_lang,
+                            user_text=user_text,
+                            channel=channel,
+                            channel_uid=channel_uid,
+                            lc=lc,
+                            ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
+                            lead_profile=session.get("lead_profile") if isinstance(session.get("lead_profile"), dict) else None,
+                            confirmation_override=confirmation_override,
+                        )
+                        try:
+                            parsed_result = json.loads(result_str)
+                        except json.JSONDecodeError:
+                            parsed_result = {"raw_result": result_str}
                 model_result_payload = _compact_tool_result_for_model(tool_name, parsed_result if isinstance(parsed_result, dict) else {})
                 model_result_str = json.dumps(model_result_payload, ensure_ascii=False, default=str)
 
@@ -2153,11 +2266,11 @@ async def process_message_result(
 
     session["messages"].append({"role": "user", "content": user_text})
     if (not str(final_reply or "").strip() or str(final_reply).strip() == "...") and last_successful_tool_name and last_successful_tool_result:
-        fallback_reply = _tool_success_fallback_reply(last_successful_tool_name, last_successful_tool_result)
+        fallback_reply = _tool_success_fallback_reply(last_successful_tool_name, last_successful_tool_result, current_lang)
         if fallback_reply:
             final_reply = fallback_reply
     elif synthesized_confirmation_tool and last_successful_tool_name and last_successful_tool_result and not str(final_reply or "").strip():
-        fallback_reply = _tool_success_fallback_reply(last_successful_tool_name, last_successful_tool_result)
+        fallback_reply = _tool_success_fallback_reply(last_successful_tool_name, last_successful_tool_result, current_lang)
         if fallback_reply:
             final_reply = fallback_reply
     final_reply = _format_customer_reply(final_reply)
@@ -2245,6 +2358,23 @@ async def process_message_result(
     )
     result["text"] = final_reply
     return result
+
+
+async def process_message_result(
+    channel: str,
+    channel_uid: str,
+    user_text: str,
+    tenant: dict,
+    channel_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    async with session_processing_lock(channel, channel_uid):
+        return await _process_message_result_locked(
+            channel,
+            channel_uid,
+            user_text,
+            tenant,
+            channel_context=channel_context,
+        )
 
 
 async def process_message(

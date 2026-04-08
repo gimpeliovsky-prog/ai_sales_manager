@@ -1,5 +1,6 @@
 import json
 import logging
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -48,6 +49,10 @@ def _sales_owner_telegram_key(company_code: str, username: str) -> str:
 def _sales_owner_route_key(company_code: str, route_key: str) -> str:
     safe_route_key = str(route_key or "default").replace(":", "_")
     return f"ai_sales_owner_route:{company_code}:{safe_route_key}"
+
+
+def _session_lock_key(channel: str, uid: str) -> str:
+    return f"ai_session_lock:{channel}:{uid}"
 
 
 def _parse_key(key: str) -> tuple[str, str] | None:
@@ -417,3 +422,28 @@ async def clear_session(channel: str, uid: str) -> None:
     if lead_id:
         keys.append(_lead_index_key(str(lead_id)))
     await _client().delete(*keys)
+
+
+@asynccontextmanager
+async def session_processing_lock(
+    channel: str,
+    uid: str,
+    *,
+    timeout_seconds: int = 120,
+    blocking_timeout_seconds: int = 15,
+):
+    lock = _client().lock(
+        _session_lock_key(channel, uid),
+        timeout=max(5, int(timeout_seconds or 120)),
+        blocking_timeout=max(1, int(blocking_timeout_seconds or 15)),
+    )
+    acquired = await lock.acquire()
+    if not acquired:
+        raise RuntimeError(f"Failed to acquire session lock for {channel}:{uid}")
+    try:
+        yield
+    finally:
+        try:
+            await lock.release()
+        except Exception:
+            logger.warning("Failed to release session lock for %s:%s", channel, uid)
