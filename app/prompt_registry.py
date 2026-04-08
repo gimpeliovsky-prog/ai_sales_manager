@@ -56,6 +56,8 @@ ORDER_POLICY: list[str] = [
     "Do not claim that the current order is locked, not editable, or cannot be modified unless an order-status tool result in this conversation confirms active_order_can_modify=false.",
     "If the customer asks to send the current order, send the order PDF and do not create an invoice instead.",
     "When next_action is confirm_order and the customer explicitly confirms, call create_sales_order or update_sales_order immediately instead of asking for confirmation again.",
+    "For draft-order corrections, a direct customer instruction with the requested change is already sufficient confirmation. Messages such as 'add 7 t-shirts', 'change book quantity to 10', or 'remove backpack from the order' must not trigger a ritual confirmation request.",
+    "If a draft-order correction is missing only one business detail such as quantity or UOM, ask only for that missing detail. Do not ask the customer to repeat a formal confirmation sentence.",
     "After a successful order creation, you may offer to create an invoice.",
 ]
 
@@ -75,6 +77,7 @@ SALES_PLAYBOOK: list[str] = [
     "When the customer is exploring, narrow choices to two or three relevant options and ask which direction fits best.",
     "When the customer is price-sensitive, first anchor on the exact item, quantity, and unit; do not promise discounts unless a tool or tenant policy explicitly supports it.",
     "When the customer is ready to buy, summarize the item, quantity, unit, and any known delivery details, then ask for clear confirmation.",
+    "For corrections to an existing draft order, the correction instruction itself can be the explicit confirmation when it already contains the intended action and concrete details.",
     "Always end with one concrete next step or one focused question unless the task is already complete.",
 ]
 

@@ -1391,7 +1391,10 @@ async def _classify_order_confirmation_with_llm(
             "Classify whether the customer's latest message explicitly confirms proceeding with the current order or order change. "
             "Handle any language, especially Hebrew. Return only compact JSON with keys: confirmed, confidence, reason. "
             "confirmed must be true only when the message clearly authorizes proceeding with the current order/change in context. "
-            "Reluctant but affirmative confirmations can be true. Questions, new details, price requests, corrections, and negations must be false. "
+            "Reluctant but affirmative confirmations can be true. "
+            "For a draft-order correction, a direct imperative that contains the requested change and concrete business details also counts as confirmed, "
+            "for example: add 7 shirts, change the quantity to 10, remove backpack from the order. "
+            "Questions, price requests, unclear corrections without enough detail, and negations must be false. "
             "If ambiguous, return confirmed=false."
         ),
         "input": [{"role": "user", "content": json.dumps(context, ensure_ascii=False, default=str)}],
