@@ -113,6 +113,12 @@ def evaluate_tool_call(
                 "Sales order is below this tenant's minimum order total.",
                 "Explain the minimum order total and ask whether to adjust the order.",
             )
+        if confirmation_override is False:
+            return _deny(
+                tool_name,
+                "Sales order creation requires explicit customer confirmation in the current conversation context.",
+                "Ask the customer to confirm the current order contents.",
+            )
         if not (has_explicit_confirmation(user_text) or confirmation_override is True):
             return _deny(
                 tool_name,
@@ -152,6 +158,12 @@ def evaluate_tool_call(
                 tool_name,
                 f"Multi-item order UOM is still only a likely assumption ({assumed_uom}).",
                 "Ask the customer to confirm whether the listed quantities are boxes or another unit before updating the order.",
+            )
+        if confirmation_override is False:
+            return _deny(
+                tool_name,
+                "Sales order update requires explicit customer confirmation in the current conversation context.",
+                "Ask the customer to confirm the requested order change.",
             )
         return None
 

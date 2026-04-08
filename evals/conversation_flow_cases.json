@@ -215,5 +215,86 @@
       "handoff_reason": null,
       "failed_clarification_count": 0
     }
+  },
+  {
+    "name": "clarification_progress_on_quantity_does_not_trigger_handoff",
+    "session": {
+      "stage": "clarify",
+      "failed_clarification_count": 1,
+      "erp_customer_id": "CUST-0001"
+    },
+    "user_text": "10",
+    "channel": "telegram",
+    "needs_intro": false,
+    "customer_identified": true,
+    "active_order_name": null,
+    "intent": "order_detail",
+    "intent_confidence": 0.7,
+    "behavior_class": "direct_buyer",
+    "behavior_confidence": 0.84,
+    "previous_lead_profile": {
+      "status": "new_lead",
+      "product_interest": "backpack"
+    },
+    "lead_profile": {
+      "status": "qualified",
+      "product_interest": "backpack",
+      "quantity": 10,
+      "next_action": "ask_unit"
+    },
+    "ai_policy": {
+      "handoff_rules": {
+        "enabled": true,
+        "allow_customer_requested_handoff": true,
+        "frustrated_customer_handoff": true,
+        "clarification_failure_limit": 2
+      }
+    },
+    "expected": {
+      "stage": "clarify",
+      "handoff_required": false,
+      "failed_clarification_count": 0
+    }
+  },
+  {
+    "name": "merged_order_state_advances_to_confirm",
+    "session": {
+      "stage": "clarify",
+      "failed_clarification_count": 1,
+      "erp_customer_id": "CUST-0001"
+    },
+    "user_text": "10 pcs backpack",
+    "channel": "telegram",
+    "needs_intro": false,
+    "customer_identified": true,
+    "active_order_name": null,
+    "intent": "order_detail",
+    "intent_confidence": 0.7,
+    "behavior_class": "direct_buyer",
+    "behavior_confidence": 0.84,
+    "previous_lead_profile": {
+      "status": "new_lead",
+      "product_interest": "backpack"
+    },
+    "lead_profile": {
+      "status": "order_ready",
+      "product_interest": "backpack",
+      "quantity": 10,
+      "uom": "piece",
+      "next_action": "confirm_order"
+    },
+    "ai_policy": {
+      "handoff_rules": {
+        "enabled": true,
+        "allow_customer_requested_handoff": true,
+        "frustrated_customer_handoff": true,
+        "clarification_failure_limit": 2
+      }
+    },
+    "expected": {
+      "stage": "confirm",
+      "handoff_required": false,
+      "failed_clarification_count": 0
+    }
   }
 ]

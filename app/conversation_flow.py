@@ -172,6 +172,99 @@ _CONTACT_DETAILS_RE = re.compile(
 )
 
 
+def _lead_profile_dict(profile: Any) -> dict[str, Any]:
+    return profile if isinstance(profile, dict) else {}
+
+
+def _has_value(value: Any) -> bool:
+    if isinstance(value, list):
+        return bool(value)
+    return value not in (None, "", False)
+
+
+def _has_quantity_detail(profile: dict[str, Any]) -> bool:
+    return bool(profile.get("quantity")) or bool(profile.get("requested_items_have_quantities") and profile.get("requested_item_count"))
+
+
+def _has_unit_detail(profile: dict[str, Any]) -> bool:
+    return bool(profile.get("uom")) or bool(profile.get("requested_item_count") and not profile.get("requested_items_need_uom_confirmation"))
+
+
+def _clarification_progress_made(
+    *,
+    previous_profile: dict[str, Any],
+    current_profile: dict[str, Any],
+    user_text: str,
+    customer_identified: bool,
+) -> bool:
+    if _CONTACT_DETAILS_RE.search(user_text or ""):
+        return True
+    tracked_transitions = (
+        ("product_interest", lambda profile: _has_value(profile.get("product_interest"))),
+        ("quantity", _has_quantity_detail),
+        ("uom", _has_unit_detail),
+        ("urgency", lambda profile: _has_value(profile.get("urgency"))),
+        ("delivery_need", lambda profile: _has_value(profile.get("delivery_need"))),
+        ("target_order_id", lambda profile: _has_value(profile.get("target_order_id"))),
+    )
+    for _, resolver in tracked_transitions:
+        if not resolver(previous_profile) and resolver(current_profile):
+            return True
+    if customer_identified and not previous_profile.get("customer_identified"):
+        return True
+    if str(previous_profile.get("next_action") or "") != str(current_profile.get("next_action") or ""):
+        return True
+    return False
+
+
+def _derive_stage_from_state(
+    *,
+    session: dict[str, Any],
+    intent: str,
+    customer_identified: bool,
+    needs_intro: bool,
+    active_order_name: str | None,
+    lead_profile: dict[str, Any],
+) -> tuple[str, float]:
+    previous_stage = str(session.get("stage") or "")
+    status = str(lead_profile.get("status") or "none")
+    next_action = str(lead_profile.get("next_action") or "")
+
+    if intent == "human_handoff":
+        return "handoff", 0.98
+    if status == "service" or intent == "service_request":
+        return "service", 0.95
+    if status in {"order_created", "won"}:
+        return ("closed", 0.93) if previous_stage == "closed" else ("invoice", 0.93)
+    if status == "handoff":
+        return "handoff", 0.97
+    if needs_intro or not customer_identified:
+        if intent in {"low_signal", "service_request"} and not lead_profile.get("product_interest"):
+            return "identify", 0.95
+        return "lead_capture", 0.88
+    if lead_profile.get("order_correction_status") == "requested":
+        return "order_build", 0.88
+    if active_order_name and intent == "add_to_order":
+        return "order_build", 0.9
+    if status == "order_ready" or next_action == "confirm_order" or intent == "confirm_order":
+        return "confirm", 0.9
+    if next_action in {"ask_delivery_timing", "clarify_order_correction"}:
+        return "order_build", 0.86
+    if next_action in {"ask_quantity", "ask_unit"}:
+        return "clarify", 0.82
+    if status in {"qualified", "quote_needed"}:
+        return ("order_build", 0.8) if customer_identified else ("clarify", 0.78)
+    if intent == "browse_catalog":
+        return "discover", 0.83
+    if lead_profile.get("product_interest"):
+        return "discover", 0.72
+    if intent == "low_signal":
+        return "clarify", 0.72
+    if previous_stage in STAGE_PROMPTS:
+        return previous_stage, 0.58
+    return DEFAULT_STAGE, 0.5
+
+
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip()).lower()
 
@@ -304,29 +397,16 @@ def classify_stage(
     customer_identified: bool,
     needs_intro: bool,
     active_order_name: str | None,
+    lead_profile: dict[str, Any] | None = None,
 ) -> tuple[str, float]:
-    if intent == "human_handoff":
-        return "handoff", 0.98
-    if needs_intro or not customer_identified:
-        if intent not in {"low_signal", "service_request"}:
-            return "lead_capture", 0.86
-        return "identify", 0.97
-    if intent == "service_request":
-        return "service", 0.95
-    if active_order_name and intent == "add_to_order":
-        return "order_build", 0.9
-    if intent == "confirm_order":
-        return "confirm", 0.82
-    if intent == "order_detail":
-        return "clarify", 0.7
-    if intent == "browse_catalog":
-        return "discover", 0.83
-    if intent == "low_signal":
-        return "clarify", 0.72
-    previous_stage = str(session.get("stage") or "")
-    if previous_stage in STAGE_PROMPTS:
-        return previous_stage, 0.58
-    return DEFAULT_STAGE, 0.5
+    return _derive_stage_from_state(
+        session=session,
+        intent=intent,
+        customer_identified=customer_identified,
+        needs_intro=needs_intro,
+        active_order_name=active_order_name,
+        lead_profile=_lead_profile_dict(lead_profile),
+    )
 
 
 def derive_conversation_state(
@@ -338,6 +418,12 @@ def derive_conversation_state(
     customer_identified: bool,
     active_order_name: str | None,
     ai_policy: dict[str, Any] | None = None,
+    lead_profile: dict[str, Any] | None = None,
+    previous_lead_profile: dict[str, Any] | None = None,
+    behavior_class: str | None = None,
+    behavior_confidence: float | None = None,
+    intent: str | None = None,
+    intent_confidence: float | None = None,
 ) -> dict[str, Any]:
     ai_policy = ai_policy if isinstance(ai_policy, dict) else {}
     handoff_rules = ai_policy.get("handoff_rules") if isinstance(ai_policy.get("handoff_rules"), dict) else {}
@@ -346,21 +432,32 @@ def derive_conversation_state(
     allow_customer_requested_handoff = bool(handoff_rules.get("allow_customer_requested_handoff", True))
     frustrated_customer_handoff = bool(handoff_rules.get("frustrated_customer_handoff", True))
 
-    behavior_class, behavior_confidence = classify_behavior(user_text, session, ai_policy=ai_policy)
-    intent, intent_confidence = classify_intent(user_text, ai_policy=ai_policy)
-    if behavior_class == "silent_or_low_signal" and intent == "find_product":
-        intent = "low_signal"
-        intent_confidence = max(intent_confidence, behavior_confidence)
+    resolved_behavior_class = behavior_class
+    resolved_behavior_confidence = behavior_confidence
+    if not resolved_behavior_class or resolved_behavior_confidence is None:
+        resolved_behavior_class, resolved_behavior_confidence = classify_behavior(user_text, session, ai_policy=ai_policy)
+    resolved_intent = intent
+    resolved_intent_confidence = intent_confidence
+    if not resolved_intent or resolved_intent_confidence is None:
+        resolved_intent, resolved_intent_confidence = classify_intent(user_text, ai_policy=ai_policy)
+    if resolved_behavior_class == "silent_or_low_signal" and resolved_intent == "find_product":
+        resolved_intent = "low_signal"
+        resolved_intent_confidence = max(float(resolved_intent_confidence), float(resolved_behavior_confidence))
+    current_profile = _lead_profile_dict(lead_profile)
+    previous_profile = _lead_profile_dict(previous_lead_profile)
+    current_profile.setdefault("customer_identified", customer_identified)
+    previous_profile.setdefault("customer_identified", bool(session.get("erp_customer_id")))
     stage, stage_confidence = classify_stage(
         session=session,
-        intent=intent,
+        intent=resolved_intent,
         customer_identified=customer_identified,
         needs_intro=needs_intro,
         active_order_name=active_order_name,
+        lead_profile=current_profile,
     )
 
     previous_stage = str(session.get("stage") or "")
-    if intent == "human_handoff" and not (handoff_enabled and allow_customer_requested_handoff):
+    if resolved_intent == "human_handoff" and not (handoff_enabled and allow_customer_requested_handoff):
         if previous_stage in STAGE_PROMPTS:
             stage = previous_stage
         elif needs_intro or not customer_identified:
@@ -369,18 +466,23 @@ def derive_conversation_state(
             stage = DEFAULT_STAGE
         stage_confidence = 0.61
     previous_failures = int(session.get("failed_clarification_count") or 0)
-    has_contact_details = bool(_CONTACT_DETAILS_RE.search(user_text or ""))
-    if stage == "clarify" and not has_contact_details:
+    progress_made = _clarification_progress_made(
+        previous_profile=previous_profile,
+        current_profile=current_profile,
+        user_text=user_text,
+        customer_identified=customer_identified,
+    )
+    if stage == "clarify" and not progress_made:
         failed_clarification_count = previous_failures + 1 if previous_stage == "clarify" else 1
     else:
         failed_clarification_count = 0
 
     handoff_required = False
     handoff_reason: str | None = None
-    if handoff_enabled and allow_customer_requested_handoff and intent == "human_handoff":
+    if handoff_enabled and allow_customer_requested_handoff and resolved_intent == "human_handoff":
         handoff_required = True
         handoff_reason = "customer_requested_human"
-    elif handoff_enabled and frustrated_customer_handoff and behavior_class == "frustrated":
+    elif handoff_enabled and frustrated_customer_handoff and resolved_behavior_class == "frustrated":
         handoff_required = True
         handoff_reason = "frustrated_customer"
     elif handoff_enabled and failed_clarification_count >= clarification_failure_limit:
@@ -394,10 +496,10 @@ def derive_conversation_state(
     return {
         "stage": stage,
         "stage_confidence": round(stage_confidence, 2),
-        "behavior_class": behavior_class,
-        "behavior_confidence": round(behavior_confidence, 2),
-        "last_intent": intent,
-        "last_intent_confidence": round(intent_confidence, 2),
+        "behavior_class": resolved_behavior_class,
+        "behavior_confidence": round(float(resolved_behavior_confidence), 2),
+        "last_intent": resolved_intent,
+        "last_intent_confidence": round(float(resolved_intent_confidence), 2),
         "failed_clarification_count": failed_clarification_count,
         "handoff_required": handoff_required,
         "handoff_reason": handoff_reason,

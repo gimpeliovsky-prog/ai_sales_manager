@@ -47,6 +47,7 @@ from app.sales_quality import evaluate_conversation_quality  # noqa: E402
 from app.sales_reporting import crm_export_contract, dashboard_contract, filter_leads, lead_snapshot, paginate_leads, summarize_leads, summarize_manager_performance, summarize_source_funnel, summarize_time_funnel  # noqa: E402
 from app.sales_timeline import append_lead_timeline_event  # noqa: E402
 from app.tool_policy import evaluate_tool_call  # noqa: E402
+from app.uom_semantics import localize_uom_label, resolve_catalog_uom  # noqa: E402
 
 
 def _load_cases(filename: str) -> list[dict[str, Any]]:
@@ -75,6 +76,12 @@ def run_conversation_flow_evals() -> list[str]:
             customer_identified=case["customer_identified"],
             active_order_name=case["active_order_name"],
             ai_policy=case.get("ai_policy"),
+            lead_profile=case.get("lead_profile"),
+            previous_lead_profile=case.get("previous_lead_profile"),
+            behavior_class=case.get("behavior_class"),
+            behavior_confidence=case.get("behavior_confidence"),
+            intent=case.get("intent"),
+            intent_confidence=case.get("intent_confidence"),
         )
         failures.extend(_assert_subset(actual, case["expected"], case["name"]))
     return failures
@@ -112,6 +119,16 @@ def run_tool_policy_evals() -> list[str]:
     )
     if llm_confirmed is not None:
         failures.append(f"tool_policy_confirmation_override_allows_order: got {llm_confirmed!r}")
+    llm_denied = evaluate_tool_call(
+        tool_name="create_sales_order",
+        inputs={"items": [{"item_code": "ITEM-001", "qty": 2}]},
+        session={"stage": "confirm", "erp_customer_id": "CUST-0001", "last_intent": "confirm_order"},
+        tenant={"ai_policy": {"allowed_tools": ["create_sales_order"]}},
+        user_text="ok",
+        confirmation_override=False,
+    )
+    if llm_denied is None or not llm_denied.get("blocked_by_policy"):
+        failures.append(f"tool_policy_confirmation_override_denies_order: got {llm_denied!r}")
     llm_not_confirmed = evaluate_tool_call(
         tool_name="create_sales_order",
         inputs={"items": [{"item_code": "ITEM-001", "qty": 2}]},
@@ -296,7 +313,7 @@ def run_catalog_localization_evals() -> list[str]:
         "canonical_item_name": "Coffee Machine",
     }
     failures.extend(_assert_subset(item, expected, "catalog_localization_requested_translation"))
-    if item.get("customer_uom_options") != ["pcs", "Box"]:
+    if item.get("customer_uom_options") != ["шт.", "коробки"]:
         failures.append(f"catalog_localization_preserves_uom_labels: got {item!r}")
 
     fallback = localize_catalog_result(
@@ -346,6 +363,43 @@ def run_catalog_localization_evals() -> list[str]:
     )
     if catalog_lang("auto") is not None or catalog_lang("pt-BR") != "pt":
         failures.append("catalog_lang_normalization: expected auto -> None and pt-BR -> pt")
+    return failures
+
+
+def run_uom_semantics_evals() -> list[str]:
+    failures: list[str] = []
+    resolved_piece = resolve_catalog_uom(
+        "шт",
+        [
+            {"uom": "pcs", "conversion_factor": 1.0, "is_stock_uom": True},
+            {"uom": "Box", "conversion_factor": 12.0, "is_stock_uom": False},
+        ],
+    )
+    failures.extend(
+        _assert_subset(
+            resolved_piece,
+            {"resolved": True, "uom": "pcs", "match_type": "semantic", "canonical_uom": "piece"},
+            "uom_semantics_resolves_ru_piece_to_catalog_pcs",
+        )
+    )
+    resolved_box = resolve_catalog_uom(
+        "קופסה",
+        [
+            {"uom": "pcs", "conversion_factor": 1.0, "is_stock_uom": True},
+            {"uom": "Box", "conversion_factor": 12.0, "is_stock_uom": False},
+        ],
+    )
+    failures.extend(
+        _assert_subset(
+            resolved_box,
+            {"resolved": True, "uom": "Box", "match_type": "semantic", "canonical_uom": "box"},
+            "uom_semantics_resolves_hebrew_box_alias",
+        )
+    )
+    if localize_uom_label("pcs", "ru") != "шт.":
+        failures.append(f"uom_semantics_localizes_piece_label_ru: got {localize_uom_label('pcs', 'ru')!r}")
+    if localize_uom_label("Box", "he") != "קרטונים":
+        failures.append(f"uom_semantics_localizes_box_label_he: got {localize_uom_label('Box', 'he')!r}")
     return failures
 
 
@@ -563,6 +617,22 @@ def run_lead_management_evals() -> list[str]:
             preserve_product_on_qty_uom_reply,
             {"product_interest": "backpack", "uom": "piece", "quantity": 10.0},
             "single_item_qty_uom_reply_preserves_product_interest",
+        )
+    )
+    preserve_product_on_ru_piece_reply = update_lead_profile_from_message(
+        current_profile={"status": "new_lead", "product_interest": "рюкзак"},
+        user_text="10 шт",
+        stage="clarify",
+        behavior_class="direct_buyer",
+        intent="order_detail",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            preserve_product_on_ru_piece_reply,
+            {"product_interest": "рюкзак", "uom": "piece", "quantity": 10.0},
+            "single_item_ru_piece_reply_preserves_product_interest",
         )
     )
     normalized_single_item_profile = update_lead_profile_from_message(
@@ -942,6 +1012,22 @@ def run_lead_management_evals() -> list[str]:
             "order_correction_requested_updates_profile",
         )
     )
+    correction_message_profile = update_lead_profile_from_message(
+        current_profile={"status": "order_created"},
+        user_text="изменить количество в заказе",
+        stage="service",
+        behavior_class="service_request",
+        intent="service_request",
+        customer_identified=True,
+        active_order_name="SO-1",
+    )
+    failures.extend(
+        _assert_subset(
+            correction_message_profile,
+            {"order_correction_status": "requested", "correction_type": "quantity", "target_order_id": "SO-1"},
+            "order_correction_signal_is_multilingual_and_state_based",
+        )
+    )
     order_status_profile = update_lead_profile_from_tool(
         current_profile={"status": "order_created", "order_correction_status": "requested"},
         tool_name="get_sales_order_status",
@@ -1298,6 +1384,7 @@ def main() -> int:
     failures.extend(run_language_lock_evals())
     failures.extend(run_i18n_evals())
     failures.extend(run_catalog_localization_evals())
+    failures.extend(run_uom_semantics_evals())
     failures.extend(run_lead_management_evals())
     failures.extend(run_sales_dedupe_evals())
     failures.extend(run_sales_reporting_evals())

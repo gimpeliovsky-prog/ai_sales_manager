@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.i18n import normalize_lang, text as i18n_text
+from app.uom_semantics import canonical_uom, localize_available_uom_options, localize_uom_label
 
 
 def catalog_lang(lang: str | None) -> str | None:
@@ -167,20 +168,30 @@ def localize_catalog_result(result: dict[str, Any], lang: str, ai_policy: dict[s
                     updated_uoms.append(uom)
                     continue
                 updated = dict(uom)
-                updated["display_name"] = _uom_label(updated.get("display_name") or updated.get("uom"))
+                localized_label = localize_uom_label(updated.get("display_name") or updated.get("uom"), lang, ai_policy)
+                updated["display_name"] = localized_label or _uom_label(updated.get("display_name") or updated.get("uom"))
+                updated["uom_semantic"] = canonical_uom(updated.get("uom") or updated.get("display_name"), ai_policy)
                 updated_uoms.append(updated)
             localized["available_uoms"] = updated_uoms
             localized["non_stock_uoms"] = [uom for uom in updated_uoms if isinstance(uom, dict) and not uom.get("is_stock_uom")]
-        labels = []
-        if localized.get("stock_uom_label"):
-            stock_label = _uom_label(localized["stock_uom_label"])
+        if localized.get("stock_uom") or localized.get("stock_uom_label"):
+            stock_label = localize_uom_label(
+                localized.get("stock_uom_label") or localized.get("stock_uom"),
+                lang,
+                ai_policy,
+            )
             if stock_label:
-                labels.append(stock_label)
-        for uom in localized.get("non_stock_uoms", []):
-            if isinstance(uom, dict):
-                label = str(uom.get("display_name") or uom.get("uom") or "").strip()
-                if label and label not in labels:
-                    labels.append(label)
+                localized["stock_uom_label"] = stock_label
+        if localized.get("sales_uom"):
+            sales_uom_label = localize_uom_label(localized.get("sales_uom_label") or localized.get("sales_uom"), lang, ai_policy)
+            if sales_uom_label:
+                localized["sales_uom_label"] = sales_uom_label
+        labels = localize_available_uom_options(
+            localized.get("stock_uom_label") or localized.get("stock_uom"),
+            localized.get("non_stock_uoms"),
+            lang=lang,
+            config=ai_policy,
+        )
         if labels:
             localized["customer_uom_options"] = labels
             localized["customer_uom_summary_key"] = "catalog.sold_in"

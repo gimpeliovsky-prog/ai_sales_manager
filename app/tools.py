@@ -14,6 +14,7 @@ from app.sales_policy import (
     remove_price_fields,
     should_hide_catalog_prices,
 )
+from app.uom_semantics import localize_available_uom_options, resolve_catalog_uom
 
 TOOLS: list[dict] = [
     {
@@ -205,6 +206,67 @@ def _build_search_candidates(*texts: str | None) -> list[str]:
     return candidates[:6]
 
 
+async def _load_catalog_item(lc: LicenseClient, company_code: str, item_code: str, current_lang: str) -> dict[str, Any]:
+    requested_lang = _catalog_lang(current_lang)
+    for candidate_lang in (requested_lang, None):
+        try:
+            result = await lc.get_item(company_code, item_code, candidate_lang)
+        except Exception:
+            continue
+        if isinstance(result, dict) and result:
+            return result
+    return {}
+
+
+async def _normalize_order_items_uoms(
+    *,
+    items: list[dict[str, Any]],
+    lc: LicenseClient,
+    company_code: str,
+    current_lang: str,
+    ai_policy: dict[str, Any] | None,
+    lead_profile: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized_items: list[dict[str, Any]] = []
+    item_cache: dict[str, dict[str, Any]] = {}
+    fallback_uom = str((lead_profile or {}).get("uom") or "").strip() or None
+
+    for item in items:
+        if not isinstance(item, dict):
+            normalized_items.append(item)
+            continue
+        updated = dict(item)
+        item_code = str(updated.get("item_code") or "").strip()
+        requested_uom = str(updated.get("uom") or fallback_uom or "").strip()
+        if not item_code or not requested_uom:
+            normalized_items.append(updated)
+            continue
+        if item_code not in item_cache:
+            item_cache[item_code] = await _load_catalog_item(lc, company_code, item_code, current_lang)
+        catalog_item = item_cache.get(item_code) or {}
+        available_uoms = catalog_item.get("available_uoms")
+        resolution = resolve_catalog_uom(requested_uom, available_uoms, config=ai_policy)
+        if not resolution.get("resolved"):
+            return {
+                "error": "Requested unit does not match the catalog UOM options for this item.",
+                "error_code": "uom_not_available",
+                "item_code": item_code,
+                "requested_uom": requested_uom,
+                "uom_resolution_reason": resolution.get("reason"),
+                "available_uoms": localize_available_uom_options(
+                    catalog_item.get("stock_uom_label") or catalog_item.get("stock_uom"),
+                    available_uoms,
+                    lang=current_lang,
+                    config=ai_policy,
+                ),
+            }
+        updated["uom"] = resolution.get("uom")
+        if resolution.get("conversion_factor") not in (None, "", 0):
+            updated["conversion_factor"] = resolution.get("conversion_factor")
+        normalized_items.append(updated)
+    return {"items": normalized_items}
+
+
 async def execute_tool(
     name: str,
     inputs: dict[str, Any],
@@ -284,13 +346,25 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
             return {"error": i18n_text("tool_error.buyer_not_identified", current_lang, ai_policy=ai_policy), "error_code": "buyer_not_identified"}
         if not _items_have_qty(inp.get("items")):
             return {"error": i18n_text("tool_error.order_qty_required", current_lang, ai_policy=ai_policy), "error_code": "order_qty_required"}
+        normalized_items_result = await _normalize_order_items_uoms(
+            items=inp.get("items") or [],
+            lc=lc,
+            company_code=company_code,
+            current_lang=current_lang,
+            ai_policy=ai_policy,
+            lead_profile=lead_profile,
+        )
+        if normalized_items_result.get("error"):
+            return normalized_items_result
         minimum_violation = minimum_order_violation(inp.get("items"), ai_policy)
         if minimum_violation:
             return {"error": "Order total is below the tenant minimum order total.", "error_code": "minimum_order_total_not_met", **minimum_violation}
+        if confirmation_override is False:
+            return {"error": i18n_text("tool_error.order_confirmation_required", current_lang, ai_policy=ai_policy), "error_code": "order_confirmation_required"}
         if not (_has_explicit_confirmation(user_text) or confirmation_override is True):
             return {"error": i18n_text("tool_error.order_confirmation_required", current_lang, ai_policy=ai_policy), "error_code": "order_confirmation_required"}
         delivery_date = inp.get("delivery_date") or earliest_delivery_date(ai_policy)
-        return await lc.create_sales_order(company_code, erp_customer_id, delivery_date, inp["items"])
+        return await lc.create_sales_order(company_code, erp_customer_id, delivery_date, normalized_items_result["items"])
     if name == "create_invoice":
         return await lc.create_invoice(company_code, inp["sales_order_name"])
     if name == "update_sales_order":
@@ -299,13 +373,23 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
             return {"error": i18n_text("tool_error.no_active_order", current_lang, ai_policy=ai_policy), "error_code": "no_active_order"}
         if not _items_have_qty(inp.get("items")):
             return {"error": i18n_text("tool_error.add_to_order_qty_required", current_lang, ai_policy=ai_policy), "error_code": "add_to_order_qty_required"}
-        if not _has_add_to_order_intent(user_text) and not _has_explicit_confirmation(user_text):
+        if not _has_add_to_order_intent(user_text) and not (_has_explicit_confirmation(user_text) or confirmation_override is True):
             return {"error": i18n_text("tool_error.add_to_order_confirmation_required", current_lang, ai_policy=ai_policy), "error_code": "add_to_order_confirmation_required"}
+        normalized_items_result = await _normalize_order_items_uoms(
+            items=inp.get("items") or [],
+            lc=lc,
+            company_code=company_code,
+            current_lang=current_lang,
+            ai_policy=ai_policy,
+            lead_profile=lead_profile,
+        )
+        if normalized_items_result.get("error"):
+            return normalized_items_result
         order = await lc.get_sales_order(company_code, sales_order_name)
         state = normalize_order_state(order if isinstance(order, dict) else {})
         if not state.get("can_modify"):
             return {"error": "Sales order cannot be modified in its current state.", "error_code": "sales_order_not_modifiable", **state}
-        return await lc.update_sales_order_items(company_code, sales_order_name, inp["items"])
+        return await lc.update_sales_order_items(company_code, sales_order_name, normalized_items_result["items"])
     if name == "get_sales_order_status":
         sales_order_name = inp.get("sales_order_name") or active_sales_order_name
         if not sales_order_name:

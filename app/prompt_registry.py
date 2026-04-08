@@ -35,6 +35,7 @@ CATALOG_POLICY: list[str] = [
     "Treat stock units and sales units as separate concepts.",
     "Use only UOM values returned by the catalog or item tools.",
     "When tool results include customer_uom_options, use those options and phrase the explanation naturally in the customer's language.",
+    "A customer may mention a unit in their own language even when the ERP catalog stores it under another label such as pcs; treat semantically equivalent units as the same, but in tool calls use the matching catalog UOM.",
     "If a catalog tool result has price_display_blocked=true, do not state a price or rate; ask for the missing product, quantity, or UOM shown in price_anchor.missing.",
     "If the requested UOM is unclear or unavailable, clarify before creating or updating an order.",
     "Do not expose internal field names such as stock_uom, available_uoms, non_stock_uoms, or conversion_factor.",

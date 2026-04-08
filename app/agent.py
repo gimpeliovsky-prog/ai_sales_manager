@@ -8,10 +8,10 @@ from typing import Any
 import httpx
 
 from app.buyer_resolver import create_buyer_from_intro, resolve_buyer
-from app.conversation_flow import advance_stage_after_tool, derive_conversation_state, get_handoff_message
+from app.conversation_flow import advance_stage_after_tool, classify_behavior, classify_intent, derive_conversation_state, get_handoff_message
 from app.config import get_settings
 from app.i18n import text as i18n_text
-from app.interaction_patterns import has_add_to_order_intent, has_explicit_confirmation
+from app.interaction_patterns import has_explicit_confirmation
 from app.language_policy import resolve_conversation_language
 from app.lead_management import (
     build_lead_event_payload,
@@ -95,7 +95,12 @@ def _handoff_target(tenant: dict[str, Any]) -> dict[str, Any]:
 
 def _lead_management_config(tenant: dict[str, Any]) -> dict[str, Any]:
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
-    lead_config = ai_policy.get("lead_management") if isinstance(ai_policy.get("lead_management"), dict) else {}
+    lead_config = dict(ai_policy.get("lead_management")) if isinstance(ai_policy.get("lead_management"), dict) else {}
+    catalog_policy = ai_policy.get("catalog") if isinstance(ai_policy.get("catalog"), dict) else {}
+    if isinstance(catalog_policy.get("uom_aliases"), dict) and not isinstance(lead_config.get("uom_aliases"), dict):
+        lead_config["uom_aliases"] = catalog_policy.get("uom_aliases")
+    if isinstance(catalog_policy.get("uom_labels"), dict) and not isinstance(lead_config.get("uom_labels"), dict):
+        lead_config["uom_labels"] = catalog_policy.get("uom_labels")
     return lead_config
 
 
@@ -430,17 +435,6 @@ def _apply_buyer_context(session: dict[str, Any], buyer_result: dict[str, Any]) 
     session["returning_customer_announced"] = False
 
 
-def _has_explicit_confirmation(user_text: str) -> bool:
-    return has_explicit_confirmation(user_text)
-
-
-def _has_add_to_order_intent(user_text: str) -> bool:
-    return has_add_to_order_intent(user_text)
-
-
-def _existing_order_message(lang: str, order_name: str) -> str:
-    return i18n_text("order.already_created", lang, {"order_name": order_name})
-
 def _is_returning_customer(session: dict[str, Any]) -> bool:
     return bool(session.get("recent_sales_orders") or session.get("recent_sales_invoices"))
 
@@ -646,13 +640,17 @@ async def _classify_order_confirmation_with_llm(
     inputs: dict[str, Any],
     tenant: dict[str, Any],
 ) -> dict[str, Any]:
-    if has_explicit_confirmation(user_text):
-        return {"confirmed": True, "confidence": 1.0, "reason": "regex_confirmation", "source": "regex"}
     if not _confirmation_classifier_enabled(tenant):
-        return {"confirmed": False, "confidence": 0.0, "reason": "classifier_disabled", "source": "disabled"}
+        return {
+            "confirmed": has_explicit_confirmation(user_text),
+            "confidence": 1.0 if has_explicit_confirmation(user_text) else 0.0,
+            "reason": "regex_fallback_classifier_disabled" if has_explicit_confirmation(user_text) else "classifier_disabled",
+            "source": "regex" if has_explicit_confirmation(user_text) else "disabled",
+        }
     lead_profile = normalize_lead_profile(session.get("lead_profile"))
     context = {
         "customer_message": user_text,
+        "regex_confirmation_hint": has_explicit_confirmation(user_text),
         "conversation_stage": session.get("stage"),
         "last_intent": session.get("last_intent"),
         "tool_name": tool_name,
@@ -828,6 +826,23 @@ async def process_message_result(
                 )
 
     active_order_name = session.get("last_sales_order_name")
+    ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None
+    behavior_class, behavior_confidence = classify_behavior(user_text, session, ai_policy=ai_policy)
+    intent, intent_confidence = classify_intent(user_text, ai_policy=ai_policy)
+    if behavior_class == "silent_or_low_signal" and intent == "find_product":
+        intent = "low_signal"
+        intent_confidence = max(intent_confidence, behavior_confidence)
+    previous_lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    session["lead_profile"] = update_lead_profile_from_message(
+        current_profile=previous_lead_profile,
+        user_text=user_text,
+        stage=session.get("stage"),
+        behavior_class=behavior_class,
+        intent=intent,
+        customer_identified=bool(session.get("erp_customer_id")),
+        active_order_name=active_order_name,
+        lead_config=_lead_management_config(tenant),
+    )
     session.update(
         derive_conversation_state(
             session=session,
@@ -836,19 +851,14 @@ async def process_message_result(
             needs_intro=needs_intro,
             customer_identified=bool(session.get("erp_customer_id")),
             active_order_name=active_order_name,
-            ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
+            ai_policy=ai_policy,
+            lead_profile=session.get("lead_profile") if isinstance(session.get("lead_profile"), dict) else None,
+            previous_lead_profile=previous_lead_profile,
+            behavior_class=behavior_class,
+            behavior_confidence=behavior_confidence,
+            intent=intent,
+            intent_confidence=intent_confidence,
         )
-    )
-    previous_lead_profile = normalize_lead_profile(session.get("lead_profile"))
-    session["lead_profile"] = update_lead_profile_from_message(
-        current_profile=previous_lead_profile,
-        user_text=user_text,
-        stage=session.get("stage"),
-        behavior_class=session.get("behavior_class"),
-        intent=session.get("last_intent"),
-        customer_identified=bool(session.get("erp_customer_id")),
-        active_order_name=active_order_name,
-        lead_config=_lead_management_config(tenant),
     )
     await _apply_lead_dedupe(
         company_code=company_code,
@@ -957,7 +967,13 @@ async def process_message_result(
         result["text"] = reply
         return result
 
-    if needs_intro and not session.get("erp_customer_id") and session.get("stage") == "identify":
+    if (
+        needs_intro
+        and not session.get("erp_customer_id")
+        and session.get("stage") == "identify"
+        and session.get("last_intent") in {"low_signal", "service_request"}
+        and not normalize_lead_profile(session.get("lead_profile")).get("product_interest")
+    ):
         if session.get("handoff_required"):
             reply = get_handoff_message(
                 current_lang,
@@ -1063,61 +1079,6 @@ async def process_message_result(
             role="assistant",
             content=reply,
             message_type="intro",
-        )
-        return result
-
-    if active_order_name and _has_explicit_confirmation(user_text) and not _has_add_to_order_intent(user_text):
-        order = await lc.get_sales_order(company_code, active_order_name)
-        result["text"] = _maybe_prefix_returning_customer(
-            session,
-            current_lang,
-            _existing_order_message(current_lang, active_order_name),
-        )
-        if order.get("order_print_url"):
-            result["documents"].append(
-                {
-                    "type": "sales_order_pdf",
-                    "url": order["order_print_url"],
-                    "filename": f"{order.get('name') or active_order_name}.pdf",
-                }
-            )
-        session["messages"].append({"role": "user", "content": user_text})
-        session["messages"].append({"role": "assistant", "content": result["text"]})
-        await save_session(channel, channel_uid, session)
-        _log_event(
-            "conversation_outcome",
-            company_code=company_code,
-            channel=channel,
-            channel_uid=channel_uid,
-            outcome="existing_order_reused",
-            stage=session.get("stage"),
-            active_order_name=active_order_name,
-            has_document=bool(result.get("documents")),
-            reply_preview=_preview_text(result.get("text")),
-        )
-        await _emit_control_plane_event(
-            lc=lc,
-            company_code=company_code,
-            channel=channel,
-            channel_uid=channel_uid,
-            event_type="conversation_outcome",
-            payload={
-                "outcome": "existing_order_reused",
-                "stage": session.get("stage"),
-                "active_order_name": active_order_name,
-                "has_document": bool(result.get("documents")),
-            },
-        )
-        await _emit_transcript_message(
-            lc=lc,
-            company_code=company_code,
-            channel=channel,
-            channel_uid=channel_uid,
-            session=session,
-            role="assistant",
-            content=result["text"],
-            message_type="service",
-            payload={"documents": result.get("documents", [])},
         )
         return result
 
@@ -1291,7 +1252,15 @@ async def process_message_result(
                             tenant=tenant,
                         )
                         min_confidence = _confirmation_min_confidence(tenant)
-                        if (
+                        if _confirmation_classifier_enabled(tenant):
+                            if (
+                                confirmation_result.get("confirmed")
+                                and float(confirmation_result.get("confidence") or 0) >= min_confidence
+                            ):
+                                confirmation_override = True
+                            else:
+                                confirmation_override = False
+                        elif (
                             confirmation_result.get("confirmed")
                             and float(confirmation_result.get("confidence") or 0) >= min_confidence
                         ):

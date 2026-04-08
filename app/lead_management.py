@@ -5,6 +5,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.uom_semantics import canonical_uom, uom_aliases
+
 LEAD_STATUSES = {
     "none",
     "new_lead",
@@ -28,43 +30,6 @@ _YES_RE = re.compile(
     r"\u0434\u0430|\u0430\u0433\u0430|\u0432\u0435\u0440\u043d\u043e|\u043f\u0440\u0430\u0432\u0438\u043b\u044c\u043d\u043e)",
     re.IGNORECASE,
 )
-DEFAULT_MULTI_ITEM_UOM_TERMS: dict[str, list[str]] = {
-    "box": [
-        "box",
-        "boxes",
-        "case",
-        "cases",
-        "\u043a\u043e\u0440\u043e\u0431\u043a\u0430",
-        "\u043a\u043e\u0440\u043e\u0431\u043a\u0438",
-        "\u043a\u043e\u0440\u043e\u0431\u043e\u043a",
-        "\u043a\u043e\u0440\u043e\u0431\u0430\u0445",
-        "\u05e7\u05e8\u05d8\u05d5\u05df",
-        "\u05e7\u05e8\u05d8\u05d5\u05e0\u05d9\u05dd",
-        "\u05e7\u05d5\u05e4\u05e1\u05d4",
-        "\u05e7\u05d5\u05e4\u05e1\u05d0",
-        "\u05e7\u05d5\u05e4\u05e1\u05d0\u05d5\u05ea",
-        "\u05e7\u05d5\u05e4\u05e1\u05d5\u05ea",
-    ],
-}
-DEFAULT_SINGLE_ITEM_UOM_TERMS: dict[str, list[str]] = {
-    "piece": [
-        "piece",
-        "pieces",
-        "pc",
-        "pcs",
-        "unit",
-        "units",
-        "each",
-    ],
-    "box": list(DEFAULT_MULTI_ITEM_UOM_TERMS["box"]),
-    "pack": [
-        "pack",
-        "packs",
-        "package",
-        "packages",
-        "pkg",
-    ],
-}
 
 
 def normalize_telegram_username(username: Any) -> str:
@@ -165,6 +130,85 @@ DEFAULT_SIGNAL_TERMS: dict[str, list[str]] = {
         "не интересно",
         "дорого",
         "купил у других",
+    ],
+    "order_correction": [
+        "change order",
+        "update order",
+        "modify order",
+        "correct order",
+        "change my order",
+        "update my order",
+        "edit order",
+        "change delivery",
+        "change quantity",
+        "remove item",
+        "replace item",
+        "изменить заказ",
+        "обновить заказ",
+        "скорректировать заказ",
+        "поменять заказ",
+        "изменить количество",
+        "убрать позицию",
+        "добавить в заказ",
+        "изменить доставку",
+        "לשנות הזמנה",
+        "לעדכן הזמנה",
+        "לתקן הזמנה",
+        "לשנות כמות",
+        "להסיר פריט",
+        "להוסיף להזמנה",
+        "تعديل الطلب",
+        "تغيير الطلب",
+        "تحديث الطلب",
+        "تغيير الكمية",
+        "إزالة صنف",
+        "إضافة إلى الطلب",
+    ],
+    "correction_delivery": [
+        "date",
+        "delivery",
+        "shipping",
+        "дата",
+        "доставка",
+        "срок",
+        "תאריך",
+        "משלוח",
+        "אספקה",
+        "تاريخ",
+        "توصيل",
+        "شحن",
+    ],
+    "correction_quantity": [
+        "qty",
+        "quantity",
+        "amount",
+        "количество",
+        "кол-во",
+        "כמות",
+        "الكمية",
+    ],
+    "correction_remove": [
+        "remove",
+        "delete",
+        "cancel item",
+        "убрать",
+        "удалить",
+        "отменить позицию",
+        "להסיר",
+        "לבטל פריט",
+        "إزالة",
+        "حذف",
+    ],
+    "correction_add": [
+        "add",
+        "more",
+        "добавить",
+        "еще",
+        "ещё",
+        "להוסיף",
+        "עוד",
+        "إضافة",
+        "المزيد",
     ],
 }
 _CURRENCY_RE = re.compile(r"[$€₪£¥₽]|(?:\b(?:usd|eur|ils|nis|rub|aed|sar)\b)", re.IGNORECASE)
@@ -397,38 +441,38 @@ def _lead_config(config: dict[str, Any] | None) -> dict[str, Any]:
     return config if isinstance(config, dict) else {}
 
 
+def _uom_config(config: dict[str, Any] | None, legacy_terms_key: str | None = None) -> dict[str, Any]:
+    lead_config = _lead_config(config)
+    merged: dict[str, Any] = {}
+    configured_aliases = lead_config.get("uom_aliases")
+    if isinstance(configured_aliases, dict):
+        merged["uom_aliases"] = {key: list(values) for key, values in configured_aliases.items() if isinstance(values, list)}
+    if legacy_terms_key:
+        legacy_terms = lead_config.get(legacy_terms_key)
+        if isinstance(legacy_terms, dict):
+            merged.setdefault("uom_aliases", {})
+            for canonical, values in legacy_terms.items():
+                if not isinstance(values, list):
+                    continue
+                merged["uom_aliases"].setdefault(str(canonical), [])
+                merged["uom_aliases"][str(canonical)].extend(values)
+    configured_labels = lead_config.get("uom_labels")
+    if isinstance(configured_labels, dict):
+        merged["uom_labels"] = configured_labels
+    return merged
+
+
 def _multi_item_default_uom(config: dict[str, Any] | None) -> str:
-    return str(_lead_config(config).get("multi_item_default_uom") or "box").strip() or "box"
+    raw_value = str(_lead_config(config).get("multi_item_default_uom") or "box").strip() or "box"
+    return canonical_uom(raw_value, _uom_config(config, "multi_item_uom_terms")) or raw_value
 
 
 def _multi_item_uom_terms(config: dict[str, Any] | None) -> dict[str, list[str]]:
-    terms = {key: list(value) for key, value in DEFAULT_MULTI_ITEM_UOM_TERMS.items()}
-    configured_terms = _lead_config(config).get("multi_item_uom_terms")
-    if isinstance(configured_terms, dict):
-        for uom, values in configured_terms.items():
-            if not isinstance(values, list):
-                continue
-            clean_uom = str(uom or "").strip()
-            if not clean_uom:
-                continue
-            terms.setdefault(clean_uom, [])
-            terms[clean_uom].extend(str(value).strip() for value in values if str(value).strip())
-    return terms
+    return uom_aliases(_uom_config(config, "multi_item_uom_terms"))
 
 
 def _single_item_uom_terms(config: dict[str, Any] | None) -> dict[str, list[str]]:
-    terms = {key: list(value) for key, value in DEFAULT_SINGLE_ITEM_UOM_TERMS.items()}
-    configured_terms = _lead_config(config).get("single_item_uom_terms")
-    if isinstance(configured_terms, dict):
-        for uom, values in configured_terms.items():
-            if not isinstance(values, list):
-                continue
-            clean_uom = str(uom or "").strip()
-            if not clean_uom:
-                continue
-            terms.setdefault(clean_uom, [])
-            terms[clean_uom].extend(str(value).strip() for value in values if str(value).strip())
-    return terms
+    return uom_aliases(_uom_config(config, "single_item_uom_terms"))
 
 
 def _extract_single_item_uom(text: str, config: dict[str, Any] | None) -> str | None:
@@ -524,6 +568,16 @@ def _configured_regexes(config: dict[str, Any] | None, signal: str) -> list[str]
     if not isinstance(regexes, list):
         return []
     return [str(pattern).strip() for pattern in regexes if str(pattern).strip()]
+
+
+def _order_correction_requested(*, user_text: str, intent: str, active_order_name: str | None, config: dict[str, Any] | None) -> bool:
+    if not active_order_name:
+        return False
+    if intent in {"add_to_order", "service_request"}:
+        return True
+    if _signal_matches(user_text, "order_correction", config):
+        return True
+    return False
 
 
 def _signal_matches(text: str, signal: str, config: dict[str, Any] | None = None) -> bool:
@@ -643,14 +697,13 @@ def _first_text(*values: Any, limit: int = 160) -> str | None:
 
 
 def _correction_type(text: str) -> str:
-    normalized = (text or "").casefold()
-    if any(term in normalized for term in ["date", "delivery", "shipping"]):
+    if _signal_matches(text, "correction_delivery"):
         return "delivery_or_date"
-    if any(term in normalized for term in ["qty", "quantity", "amount"]):
+    if _signal_matches(text, "correction_quantity"):
         return "quantity"
-    if any(term in normalized for term in ["remove", "delete", "cancel item"]):
+    if _signal_matches(text, "correction_remove"):
         return "remove_item"
-    if any(term in normalized for term in ["add", "more"]):
+    if _signal_matches(text, "correction_add"):
         return "add_item"
     return "general"
 
@@ -926,9 +979,13 @@ def update_lead_profile_from_message(
     elif resolved_intent in {"find_product", "browse_catalog"}:
         profile["decision_status"] = "evaluating"
     if active_order_name and (
-        resolved_intent in {"add_to_order", "order_detail", "service_request"}
-        or _signal_matches(user_text, "order_correction", lead_config)
-        or any(term in (user_text or "").casefold() for term in ["change", "update", "modify", "correct", "add", "remove"])
+        resolved_intent == "order_detail"
+        or _order_correction_requested(
+            user_text=user_text,
+            intent=resolved_intent,
+            active_order_name=active_order_name,
+            config=lead_config,
+        )
     ):
         profile["order_correction_status"] = "requested"
         profile["target_order_id"] = profile.get("target_order_id") or active_order_name
