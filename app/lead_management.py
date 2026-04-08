@@ -63,6 +63,14 @@ _PRODUCT_INTEREST_NOISE_TERMS = [
     "سعر", "الاسعار", "السعر", "خصم", "عرض سعر", "عاجل", "اليوم", "غدا", "توصيل", "شحن",
     "من فضلك", "رجاء",
 ]
+_CONTACT_PHONE_RE = re.compile(r"(?:\+?\d[\d\s().-]{7,}\d)")
+_CONTACT_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b")
+_CONTACT_INTRO_RE = re.compile(
+    r"(?is)\b(?:my\s+name\s+is|name\s+is|i\s+am|i'm|call\s+me|tel(?:ephone)?|phone|mobile|whatsapp|contact)\b[:\s-]*"
+)
+_COMMERCIAL_CUE_RE = re.compile(
+    r"(?is)\b(?:i\s+want|want|need|looking\s+for|show\s+me|what\s+do\s+you\s+have|which\s+do\s+you\s+have|buy|order)\b.*"
+)
 
 
 def normalize_telegram_username(username: Any) -> str:
@@ -518,6 +526,24 @@ def _clean_text(value: Any, *, limit: int = 160) -> str | None:
     return text[:limit]
 
 
+def _semantic_message_text(text: str) -> str:
+    original = str(text or "")
+    stripped = _CONTACT_EMAIL_RE.sub(" ", original)
+    stripped = _CONTACT_PHONE_RE.sub(" ", stripped)
+    stripped = _CONTACT_INTRO_RE.sub(" ", stripped)
+    stripped = re.sub(r"\s+", " ", stripped).strip(" ,.;:-")
+    commercial_match = _COMMERCIAL_CUE_RE.search(stripped)
+    if commercial_match:
+        stripped = commercial_match.group(0).strip(" ,.;:-")
+    tokens = re.findall(_TOKEN_RE, stripped)
+    has_contact_payload = bool(
+        _CONTACT_PHONE_RE.search(original) or _CONTACT_EMAIL_RE.search(original) or _CONTACT_INTRO_RE.search(original)
+    )
+    if has_contact_payload and len(tokens) <= 2:
+        return ""
+    return stripped
+
+
 def _lead_config(config: dict[str, Any] | None) -> dict[str, Any]:
     return config if isinstance(config, dict) else {}
 
@@ -645,7 +671,7 @@ def _should_replace_product_interest(
 ) -> bool:
     if not normalized_text:
         return False
-    if resolved_intent not in {"find_product", "browse_catalog"}:
+    if resolved_intent not in {"find_product", "browse_catalog", "order_detail"}:
         return False
     candidate = _normalize_single_item_interest(normalized_text, config)
     if not candidate:
@@ -1073,10 +1099,11 @@ def update_lead_profile_from_message(
             profile=profile,
             customer_identified=customer_identified,
         )
-    normalized_text = _clean_text(user_text)
-    requested_items = _parse_requested_items(user_text)
-    qty = _first_qty(user_text)
-    extracted_uom = _extract_single_item_uom(user_text, lead_config)
+    semantic_text = _semantic_message_text(user_text)
+    normalized_text = _clean_text(semantic_text)
+    requested_items = _parse_requested_items(semantic_text)
+    qty = _first_qty(semantic_text)
+    extracted_uom = _extract_single_item_uom(semantic_text, lead_config)
 
     if requested_items:
         assumed_uom = _multi_item_default_uom(lead_config)

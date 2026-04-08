@@ -808,6 +808,38 @@ def run_lead_management_evals() -> list[str]:
             "catalog_single_match_resolves_specific_item",
         )
     )
+    contact_only_profile = update_lead_profile_from_message(
+        current_profile={"status": "none", "score": 0},
+        user_text="my name is Peter tel 0557704571",
+        stage="lead_capture",
+        behavior_class="unclear_request",
+        intent="order_detail",
+        customer_identified=False,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            contact_only_profile,
+            {"product_interest": None, "need": None, "quantity": None},
+            "contact_only_message_does_not_pollute_product_slots",
+        )
+    )
+    contact_plus_order_profile = update_lead_profile_from_message(
+        current_profile={"status": "none", "score": 0},
+        user_text="my name is Peter tel 0557704571 I want backpack 10 pcs",
+        stage="lead_capture",
+        behavior_class="direct_buyer",
+        intent="order_detail",
+        customer_identified=False,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            contact_plus_order_profile,
+            {"product_interest": "backpack", "quantity": 10.0, "uom": "piece"},
+            "contact_plus_order_message_keeps_commercial_slots_only",
+        )
+    )
 
     sourced_profile = update_lead_profile_source(
         current_profile=profile,
