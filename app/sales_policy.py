@@ -130,25 +130,37 @@ def minimum_order_violation(items: Any, ai_policy: dict[str, Any] | None) -> dic
     }
 
 
+def _status_text(data: dict[str, Any], key: str) -> str:
+    return str(data.get(key) or "").strip().casefold()
+
+
+def _percentage_complete(value: Any) -> bool:
+    try:
+        return float(value or 0) >= 100.0
+    except (TypeError, ValueError):
+        return False
+
+
 def normalize_order_state(order: dict[str, Any] | None) -> dict[str, Any]:
     data = order if isinstance(order, dict) else {}
-    status_parts = " ".join(
-        str(data.get(key) or "")
-        for key in [
-            "status",
-            "docstatus",
-            "delivery_status",
-            "billing_status",
-            "per_delivered",
-            "per_billed",
-        ]
-    ).casefold()
-    delivered = "delivered" in status_parts or str(data.get("per_delivered") or "") in {"100", "100.0"}
-    invoiced = "invoiced" in status_parts or "completed" in status_parts or str(data.get("per_billed") or "") in {"100", "100.0"}
-    cancelled = "cancel" in status_parts or str(data.get("docstatus") or "") == "2"
-    submitted = str(data.get("docstatus") or "") == "1" or "submitted" in status_parts
+    status_text = _status_text(data, "status")
+    delivery_status = _status_text(data, "delivery_status")
+    billing_status = _status_text(data, "billing_status")
+    docstatus = str(data.get("docstatus") or "").strip()
+    delivered = (
+        delivery_status in {"delivered", "fully delivered"}
+        or status_text in {"delivered", "fully delivered"}
+        or _percentage_complete(data.get("per_delivered"))
+    )
+    invoiced = (
+        billing_status in {"invoiced", "fully billed", "billed"}
+        or status_text in {"completed", "invoiced", "fully billed", "billed"}
+        or _percentage_complete(data.get("per_billed"))
+    )
+    cancelled = status_text == "cancelled" or docstatus == "2"
+    submitted = docstatus == "1" or status_text == "submitted"
     can_modify = bool(data.get("can_modify")) if "can_modify" in data else not (delivered or invoiced or cancelled)
-    if str(data.get("docstatus") or "") == "0" or "draft" in status_parts:
+    if docstatus == "0" or status_text == "draft":
         state = "draft"
     elif cancelled:
         state = "cancelled"

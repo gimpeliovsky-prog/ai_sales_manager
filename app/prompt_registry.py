@@ -54,6 +54,7 @@ ORDER_POLICY: list[str] = [
     "When the buyer has prior sales history, use that context to recognize returning purchase patterns without inventing facts.",
     "If there is an active draft order and the customer wants to add more items, update that order instead of creating a new one.",
     "If the customer asks to send the current order, send the order PDF and do not create an invoice instead.",
+    "When next_action is confirm_order and the customer explicitly confirms, call create_sales_order or update_sales_order immediately instead of asking for confirmation again.",
     "After a successful order creation, you may offer to create an invoice.",
 ]
 

@@ -782,6 +782,57 @@ def _format_customer_reply(text: str) -> str:
     return result or "..."
 
 
+def _build_confirmation_fallback_call(*, session: dict[str, Any], user_text: str) -> dict[str, Any] | None:
+    if not has_explicit_confirmation(user_text):
+        return None
+    lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    next_action = str(lead_profile.get("next_action") or "").strip()
+    stage = str(session.get("stage") or "").strip()
+    if next_action != "confirm_order" and stage not in {"order_build", "confirm"}:
+        return None
+    if lead_profile.get("requested_items_need_uom_confirmation"):
+        return None
+
+    item_code = str(lead_profile.get("catalog_item_code") or "").strip()
+    uom = str(lead_profile.get("uom") or "").strip()
+    try:
+        qty = float(lead_profile.get("quantity") or 0)
+    except (TypeError, ValueError):
+        qty = 0.0
+    if not item_code or qty <= 0 or not uom:
+        return None
+
+    items = [{"item_code": item_code, "qty": qty, "uom": uom}]
+    active_order_name = str(session.get("last_sales_order_name") or "").strip()
+    correction_requested = str(lead_profile.get("order_correction_status") or "").strip() == "requested"
+    last_intent = str(session.get("last_intent") or "").strip()
+    if active_order_name and (last_intent == "add_to_order" or correction_requested or stage in {"invoice", "service", "closed"}):
+        inputs = {"sales_order_name": active_order_name, "items": items}
+        tool_name = "update_sales_order"
+    else:
+        inputs = {"items": items}
+        tool_name = "create_sales_order"
+    return {
+        "type": "function_call",
+        "name": tool_name,
+        "arguments": json.dumps(inputs, ensure_ascii=False, default=str),
+        "call_id": f"fallback_{uuid.uuid4().hex}",
+    }
+
+
+def _tool_success_fallback_reply(tool_name: str, tool_result: dict[str, Any]) -> str | None:
+    if not isinstance(tool_result, dict) or tool_result.get("error"):
+        return None
+    order_name = str(tool_result.get("name") or "").strip()
+    if tool_name == "create_sales_order" and order_name:
+        return f"Your order has been created as {order_name}. If you want, I can send the order PDF or create an invoice."
+    if tool_name == "update_sales_order" and order_name:
+        return f"I updated sales order {order_name}. If you want, I can send the updated order PDF."
+    if tool_name == "create_invoice" and order_name:
+        return f"I created invoice {order_name}."
+    return None
+
+
 async def _create_openai_response(
     client: httpx.AsyncClient,
     *,
@@ -1534,6 +1585,9 @@ async def process_message_result(
     input_items: list[dict[str, Any]] = _trim_input_items(history + [{"role": "user", "content": user_text}])
     max_iter = 10
     final_reply = "..."
+    synthesized_confirmation_tool = False
+    last_successful_tool_name: str | None = None
+    last_successful_tool_result: dict[str, Any] | None = None
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         for _ in range(max_iter):
@@ -1570,7 +1624,21 @@ async def process_message_result(
                 final_reply = reply_text
 
             if not function_calls:
-                break
+                fallback_call = _build_confirmation_fallback_call(session=session, user_text=user_text)
+                if not fallback_call:
+                    break
+                synthesized_confirmation_tool = True
+                final_reply = ""
+                function_calls = [fallback_call]
+                _log_event(
+                    "tool_call_synthesized",
+                    company_code=company_code,
+                    channel=channel,
+                    channel_uid=channel_uid,
+                    tool_name=fallback_call.get("name"),
+                    reason="explicit_confirmation_without_model_tool_call",
+                    lead_profile=session.get("lead_profile"),
+                )
 
             tool_outputs: list[dict[str, Any]] = []
             for call in function_calls:
@@ -1793,6 +1861,9 @@ async def process_message_result(
                         event_type="invoice_created",
                         payload={"name": parsed_result.get("name")},
                     )
+                if tool_name in {"create_sales_order", "update_sales_order", "create_invoice"} and not parsed_result.get("error"):
+                    last_successful_tool_name = tool_name
+                    last_successful_tool_result = parsed_result if isinstance(parsed_result, dict) else None
                 await _emit_transcript_message(
                     lc=lc,
                     company_code=company_code,
@@ -1819,6 +1890,14 @@ async def process_message_result(
             final_reply = "Произошла внутренняя ошибка, попробуйте позже."
 
     session["messages"].append({"role": "user", "content": user_text})
+    if (not str(final_reply or "").strip() or str(final_reply).strip() == "...") and last_successful_tool_name and last_successful_tool_result:
+        fallback_reply = _tool_success_fallback_reply(last_successful_tool_name, last_successful_tool_result)
+        if fallback_reply:
+            final_reply = fallback_reply
+    elif synthesized_confirmation_tool and last_successful_tool_name and last_successful_tool_result and not str(final_reply or "").strip():
+        fallback_reply = _tool_success_fallback_reply(last_successful_tool_name, last_successful_tool_result)
+        if fallback_reply:
+            final_reply = fallback_reply
     final_reply = _format_customer_reply(final_reply)
     final_reply = _maybe_prefix_returning_customer(session, current_lang, final_reply)
     session["messages"].append({"role": "assistant", "content": final_reply})
