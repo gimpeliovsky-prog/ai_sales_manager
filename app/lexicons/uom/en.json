@@ -1,0 +1,20 @@
+{
+  "aliases": {
+    "piece": ["piece", "pieces", "pc", "pcs", "unit", "units", "each", "nos"],
+    "box": ["box", "boxes", "case", "cases", "carton", "cartons"],
+    "pack": ["pack", "packs", "package", "packages", "pkg", "packet", "packets"],
+    "kg": ["kg", "kgs", "kilogram", "kilograms"],
+    "g": ["g", "gr", "gram", "grams"],
+    "l": ["l", "lt", "ltr", "liter", "liters", "litre", "litres"],
+    "m": ["m", "meter", "meters", "metre", "metres"]
+  },
+  "labels": {
+    "piece": { "en": "pieces" },
+    "box": { "en": "boxes" },
+    "pack": { "en": "packs" },
+    "kg": { "en": "kg" },
+    "g": { "en": "g" },
+    "l": { "en": "liters" },
+    "m": { "en": "meters" }
+  }
+}

@@ -5,172 +5,7 @@ import unicodedata
 from typing import Any
 
 from app.i18n import normalize_lang
-
-DEFAULT_UOM_ALIASES: dict[str, list[str]] = {
-    "piece": [
-        "piece",
-        "pieces",
-        "pc",
-        "pcs",
-        "unit",
-        "units",
-        "each",
-        "nos",
-        "шт",
-        "штука",
-        "штук",
-        "штуки",
-        "ед",
-        "единица",
-        "единицы",
-        "יחידה",
-        "יחידות",
-        "قطعة",
-        "قطع",
-    ],
-    "box": [
-        "box",
-        "boxes",
-        "case",
-        "cases",
-        "carton",
-        "cartons",
-        "коробка",
-        "коробки",
-        "коробок",
-        "коробах",
-        "ящик",
-        "ящики",
-        "קרטון",
-        "קרטונים",
-        "קופסה",
-        "קופסא",
-        "קופסאות",
-        "קופסות",
-        "كرتون",
-        "كرتونة",
-        "كراتين",
-        "علبة",
-        "علب",
-    ],
-    "pack": [
-        "pack",
-        "packs",
-        "package",
-        "packages",
-        "pkg",
-        "packet",
-        "packets",
-        "упаковка",
-        "упаковки",
-        "пачка",
-        "пачки",
-        "חבילה",
-        "חבילות",
-        "אריזה",
-        "אריזות",
-        "عبوة",
-        "عبوات",
-        "حزمة",
-        "حزم",
-    ],
-    "kg": [
-        "kg",
-        "kgs",
-        "kilogram",
-        "kilograms",
-        "кг",
-        "килограмм",
-        "килограммы",
-        'ק"ג',
-        "קילו",
-        "كيلو",
-        "كيلوغرام",
-    ],
-    "g": [
-        "g",
-        "gr",
-        "gram",
-        "grams",
-        "г",
-        "гр",
-        "грамм",
-        "граммы",
-        "גרם",
-        "גרמים",
-        "غرام",
-        "غرامات",
-    ],
-    "l": [
-        "l",
-        "lt",
-        "ltr",
-        "liter",
-        "liters",
-        "litre",
-        "litres",
-        "л",
-        "литр",
-        "литры",
-        "ליטר",
-        "ליטרים",
-        "لتر",
-        "لترات",
-    ],
-    "m": [
-        "m",
-        "meter",
-        "meters",
-        "metre",
-        "metres",
-        "м",
-        "метр",
-        "метры",
-        "מטר",
-        "מטרים",
-        "متر",
-        "أمتار",
-    ],
-}
-
-DEFAULT_UOM_LABELS: dict[str, dict[str, str]] = {
-    "en": {
-        "piece": "pieces",
-        "box": "boxes",
-        "pack": "packs",
-        "kg": "kg",
-        "g": "g",
-        "l": "liters",
-        "m": "meters",
-    },
-    "ru": {
-        "piece": "шт.",
-        "box": "коробки",
-        "pack": "упаковки",
-        "kg": "кг",
-        "g": "г",
-        "l": "литры",
-        "m": "метры",
-    },
-    "he": {
-        "piece": "יחידות",
-        "box": "קרטונים",
-        "pack": "חבילות",
-        "kg": 'ק"ג',
-        "g": "גרם",
-        "l": "ליטרים",
-        "m": "מטרים",
-    },
-    "ar": {
-        "piece": "قطع",
-        "box": "كراتين",
-        "pack": "عبوات",
-        "kg": "كجم",
-        "g": "غرام",
-        "l": "لترات",
-        "m": "أمتار",
-    },
-}
+from app.uom_lexicon import uom_alias_entries, uom_label_entries
 
 
 def _clean_text(value: Any) -> str:
@@ -248,7 +83,7 @@ def _configured_label_maps(config: dict[str, Any] | None) -> list[dict[str, Any]
 
 def uom_aliases(config: dict[str, Any] | None = None) -> dict[str, list[str]]:
     aliases: dict[str, list[str]] = {}
-    _merge_alias_bucket(aliases, DEFAULT_UOM_ALIASES)
+    _merge_alias_bucket(aliases, uom_alias_entries())
     for configured in _configured_alias_maps(config):
         _merge_alias_bucket(aliases, configured)
     return aliases
@@ -271,9 +106,21 @@ def localize_uom_label(value: Any, lang: str | None, config: dict[str, Any] | No
     canonical = canonical_uom(text, config)
     if not canonical:
         return text
-    labels = {language: dict(values) for language, values in DEFAULT_UOM_LABELS.items()}
+
+    labels: dict[str, dict[str, str]] = {}
+    for canonical_name, localized_values in uom_label_entries().items():
+        clean_canonical = normalize_uom_text(canonical_name)
+        if not clean_canonical:
+            continue
+        for language, label in localized_values.items():
+            normalized_lang = normalize_lang(language)
+            clean_label = _clean_text(label)
+            if normalized_lang and clean_label:
+                labels.setdefault(normalized_lang, {})[clean_canonical] = clean_label
+
     for configured in _configured_label_maps(config):
         _merge_label_bucket(labels, configured)
+
     normalized_lang = normalize_lang(lang)
     for candidate_lang in (normalized_lang, "default", "en"):
         bucket = labels.get(candidate_lang)
