@@ -28,6 +28,7 @@ from app.lead_management import (
 from app.license_client import get_license_client
 from app.outbound_channels import mark_sales_owner_notification, notify_sales_owner
 from app.prompt_registry import build_runtime_system_prompt
+from app.runtime_catalog_context import build_catalog_prefetch_context, catalog_prefetch_search_term, should_prefetch_catalog_options
 from app.sales_dedupe import detect_duplicate_lead
 from app.sales_lead_repository import get_sales_lead_repository
 from app.sales_quality import update_session_quality
@@ -530,6 +531,109 @@ def _trim_input_items(input_items: list[dict[str, Any]]) -> list[dict[str, Any]]
         )
     return trimmed
 
+
+async def _maybe_prefetch_catalog_context(
+    *,
+    lc: Any,
+    company_code: str,
+    channel: str,
+    channel_uid: str,
+    current_lang: str,
+    user_text: str,
+    tenant: dict[str, Any],
+    session: dict[str, Any],
+    intent: str | None,
+) -> str | None:
+    lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    if not should_prefetch_catalog_options(lead_profile=lead_profile, intent=intent):
+        return None
+    search_term = catalog_prefetch_search_term(lead_profile)
+    if not search_term:
+        return None
+
+    inputs = {"item_name": search_term}
+    result_str = await execute_tool(
+        name="get_product_catalog",
+        inputs=inputs,
+        company_code=company_code,
+        erp_customer_id=session.get("erp_customer_id"),
+        active_sales_order_name=session.get("last_sales_order_name"),
+        current_lang=current_lang,
+        user_text=user_text,
+        channel=channel,
+        channel_uid=channel_uid,
+        lc=lc,
+        ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
+        lead_profile=lead_profile,
+    )
+    try:
+        parsed_result = json.loads(result_str)
+    except json.JSONDecodeError:
+        parsed_result = {"raw_result": result_str, "error": "invalid_prefetch_result"}
+
+    previous_tool_lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    session["lead_profile"] = update_lead_profile_from_tool(
+        current_profile=previous_tool_lead_profile,
+        tool_name="get_product_catalog",
+        inputs=inputs,
+        tool_result=parsed_result if isinstance(parsed_result, dict) else {},
+        stage=session.get("stage"),
+        customer_identified=bool(session.get("erp_customer_id")),
+        active_order_name=session.get("last_sales_order_name"),
+    )
+    await save_session_snapshot(channel, channel_uid, session)
+    await _emit_sales_event_if_changed(
+        lc=lc,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        session=session,
+        previous_profile=previous_tool_lead_profile,
+        lead_config=_lead_management_config(tenant),
+    )
+
+    summary = _tool_result_summary("get_product_catalog", parsed_result if isinstance(parsed_result, dict) else {})
+    summary["source"] = "runtime_prefetch"
+    summary["search_term"] = search_term
+    _log_event(
+        "catalog_prefetch_finished",
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        stage=session.get("stage"),
+        summary=summary,
+    )
+    await _emit_control_plane_event(
+        lc=lc,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        event_type="catalog_prefetch_finished",
+        payload={
+            "tool_name": "get_product_catalog",
+            "stage": session.get("stage"),
+            "lead_profile": session.get("lead_profile"),
+            **summary,
+        },
+    )
+    append_lead_timeline_event(
+        session,
+        event_type="catalog_prefetch_finished",
+        payload=summary,
+    )
+    await _emit_transcript_message(
+        lc=lc,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        session=session,
+        role="tool",
+        message_type="tool_prefetch",
+        tool_name="get_product_catalog",
+        content=result_str,
+        payload=summary,
+    )
+    return build_catalog_prefetch_context(parsed_result if isinstance(parsed_result, dict) else {}, search_term=search_term)
 
 
 def _extract_output_text(response: dict[str, Any]) -> str:
@@ -1153,6 +1257,17 @@ async def process_message_result(
         )
         return result
 
+    prefetched_catalog_context = await _maybe_prefetch_catalog_context(
+        lc=lc,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        current_lang=current_lang,
+        user_text=user_text,
+        tenant=tenant,
+        session=session,
+        intent=session.get("last_intent"),
+    )
     history = _history_to_openai_input(session["messages"])
     input_items: list[dict[str, Any]] = _trim_input_items(history + [{"role": "user", "content": user_text}])
     max_iter = 10
@@ -1175,6 +1290,8 @@ async def process_message_result(
                 handoff_required=bool(session.get("handoff_required")),
                 handoff_reason=session.get("handoff_reason"),
             )
+            if prefetched_catalog_context:
+                system_prompt = system_prompt + "\n\n" + prefetched_catalog_context
             response = await _create_openai_response(
                 client,
                 api_key=settings.openai_api_key,

@@ -38,6 +38,7 @@ from app.lead_management import (  # noqa: E402
 )
 from app.outbound_channels import build_followup_message, build_sales_owner_message, mark_followup_attempt  # noqa: E402
 from app.prompt_registry import build_runtime_system_prompt  # noqa: E402
+from app.runtime_catalog_context import build_catalog_prefetch_context, should_prefetch_catalog_options  # noqa: E402
 from app.sales_governance import evaluate_sla_breaches, record_new_sla_breaches  # noqa: E402
 from app.sales_crm_sync import build_sales_crm_outbox_event  # noqa: E402
 from app.sales_dedupe import detect_duplicate_lead  # noqa: E402
@@ -1138,6 +1139,51 @@ def run_lead_management_evals() -> list[str]:
     return failures
 
 
+def run_agent_runtime_evals() -> list[str]:
+    failures: list[str] = []
+    broad_profile = {
+        "product_interest": "backpacks",
+        "product_resolution_status": "broad",
+        "next_action": "show_matching_options",
+    }
+    if not should_prefetch_catalog_options(lead_profile=broad_profile, intent="browse_catalog"):
+        failures.append("agent_prefetch_enabled_for_broad_product_browse: expected True")
+    if should_prefetch_catalog_options(
+        lead_profile={"product_interest": "backpacks", "product_resolution_status": "specific", "next_action": "show_matching_options"},
+        intent="browse_catalog",
+    ):
+        failures.append("agent_prefetch_disabled_for_specific_item: expected False")
+    if should_prefetch_catalog_options(
+        lead_profile={"product_interest": "backpacks", "product_resolution_status": "broad", "next_action": "ask_unit"},
+        intent="browse_catalog",
+    ):
+        failures.append("agent_prefetch_disabled_without_option_selection_state: expected False")
+
+    context = build_catalog_prefetch_context(
+        {
+            "items": [
+                {"item_code": "BP-1", "display_item_name": "Travel Backpack"},
+                {"item_code": "BP-2", "display_item_name": "City Backpack"},
+            ]
+        },
+        search_term="backpacks",
+    )
+    expected_fragments = [
+        'Runtime catalog lookup already ran for broad product "backpacks".',
+        "Travel Backpack (BP-1)",
+        "City Backpack (BP-2)",
+        "Use these matching options directly in your reply",
+    ]
+    for fragment in expected_fragments:
+        if fragment not in context:
+            failures.append(f"agent_prefetch_context_missing_fragment: expected {fragment!r} in {context!r}")
+
+    no_match_context = build_catalog_prefetch_context({"items": []}, search_term="backpacks")
+    if "found no exact matches" not in no_match_context:
+        failures.append(f"agent_prefetch_context_no_match_guidance: got {no_match_context!r}")
+    return failures
+
+
 def run_sales_dedupe_evals() -> list[str]:
     failures: list[str] = []
     now = datetime.now(UTC)
@@ -1477,6 +1523,7 @@ def main() -> int:
     failures.extend(run_catalog_localization_evals())
     failures.extend(run_uom_semantics_evals())
     failures.extend(run_lead_management_evals())
+    failures.extend(run_agent_runtime_evals())
     failures.extend(run_sales_dedupe_evals())
     failures.extend(run_sales_reporting_evals())
     failures.extend(run_sales_governance_evals())
