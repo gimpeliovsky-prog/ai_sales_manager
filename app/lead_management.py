@@ -248,6 +248,10 @@ def empty_lead_profile() -> dict[str, Any]:
         "first_source_context": None,
         "need": None,
         "product_interest": None,
+        "product_resolution_status": "unknown",
+        "catalog_item_code": None,
+        "catalog_item_name": None,
+        "catalog_candidate_count": 0,
         "quantity": None,
         "uom": None,
         "requested_items": [],
@@ -672,6 +676,23 @@ def _has_unit_detail(profile: dict[str, Any]) -> bool:
     return bool(profile.get("requested_item_count") and not profile.get("requested_items_need_uom_confirmation"))
 
 
+def _has_specific_item_selection(profile: dict[str, Any]) -> bool:
+    if profile.get("catalog_item_code"):
+        return True
+    return bool(profile.get("requested_items"))
+
+
+def _set_product_resolution_state(profile: dict[str, Any]) -> dict[str, Any]:
+    if _has_specific_item_selection(profile):
+        profile["product_resolution_status"] = "specific"
+    elif profile.get("product_interest"):
+        profile["product_resolution_status"] = "broad"
+    else:
+        profile["product_resolution_status"] = "unknown"
+        profile["catalog_candidate_count"] = 0
+    return profile
+
+
 def _first_number(*values: Any) -> float | None:
     for value in values:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -763,7 +784,7 @@ def _status_for(*, stage: str, intent: str, profile: dict[str, Any], active_orde
     return "none"
 
 
-def _next_action_for(*, status: str, stage: str, profile: dict[str, Any], customer_identified: bool) -> str:
+def _next_action_for(*, status: str, stage: str, intent: str, profile: dict[str, Any], customer_identified: bool) -> str:
     if status == "handoff":
         return "handoff_manager"
     if status in {"order_created", "won"}:
@@ -778,6 +799,10 @@ def _next_action_for(*, status: str, stage: str, profile: dict[str, Any], custom
         return "ask_unit"
     if stage in {"order_build", "confirm"} and not (profile.get("urgency") or profile.get("delivery_need")):
         return "ask_delivery_timing"
+    if not _has_specific_item_selection(profile):
+        if intent == "browse_catalog":
+            return "show_matching_options"
+        return "select_specific_item"
     if not customer_identified:
         return "ask_contact"
     if status == "quote_needed":
@@ -796,6 +821,8 @@ def _qualification_priority_for(*, status: str, stage: str, profile: dict[str, A
         return "unit_or_variant", "After quantity, clarify unit, package, or variant so price and order details are meaningful."
     if stage in {"order_build", "confirm"} and not (profile.get("urgency") or profile.get("delivery_need")):
         return "timing_or_delivery", "Before final order confirmation, clarify timing or delivery needs when they are still missing."
+    if not _has_specific_item_selection(profile):
+        return "specific_item_selection", "After product, quantity, and unit are known, resolve the exact catalog item or variant before contact or final confirmation."
     if not customer_identified:
         return "contact", "Ask for contact only after product and core order parameters are clear."
     if status == "quote_needed":
@@ -825,6 +852,8 @@ def _set_qualification_priority(
 
 def _followup_strategy_for(*, status: str, stage: str, profile: dict[str, Any]) -> str:
     next_action = str(profile.get("next_action") or "")
+    if next_action in {"show_matching_options", "select_specific_item"}:
+        return "product_selection_missing"
     if profile.get("requested_items_need_uom_confirmation") or next_action == "ask_unit":
         return "uom_confirmation"
     if profile.get("price_sensitivity") or next_action == "quote_or_clarify_price":
@@ -929,6 +958,9 @@ def update_lead_profile_from_message(
         profile["requested_items_uom_assumption_status"] = "confirmed" if not profile["requested_items_need_uom_confirmation"] else "likely"
         if product_summary:
             profile["product_interest"] = product_summary
+            profile["catalog_item_code"] = None
+            profile["catalog_item_name"] = None
+            profile["catalog_candidate_count"] = 0
         if normalized_text and not profile.get("need"):
             profile["need"] = normalized_text
     elif profile.get("requested_items") and profile.get("requested_items_need_uom_confirmation"):
@@ -947,6 +979,9 @@ def update_lead_profile_from_message(
         normalized_interest = _normalize_single_item_interest(normalized_text, lead_config) or normalized_text
         profile["product_interest"] = normalized_interest
         profile["need"] = profile.get("need") or normalized_interest
+        profile["catalog_item_code"] = None
+        profile["catalog_item_name"] = None
+        profile["catalog_candidate_count"] = 0
     if resolved_intent == "order_detail" and normalized_text and not profile.get("need"):
         profile["need"] = normalized_text
 
@@ -954,6 +989,7 @@ def update_lead_profile_from_message(
         profile["quantity"] = qty
     if extracted_uom and not requested_items:
         profile["uom"] = extracted_uom
+    _set_product_resolution_state(profile)
     if _signal_matches(user_text, "urgency", lead_config):
         profile["urgency"] = "soon"
     if _signal_matches(user_text, "delivery", lead_config):
@@ -1014,6 +1050,7 @@ def update_lead_profile_from_message(
     profile["next_action"] = _next_action_for(
         status=status,
         stage=resolved_stage,
+        intent=resolved_intent,
         profile=profile,
         customer_identified=customer_identified,
     )
@@ -1057,6 +1094,17 @@ def update_lead_profile_from_tool(
         if interest:
             profile["product_interest"] = interest
             profile["need"] = profile.get("need") or interest
+        if isinstance(items, list):
+            profile["catalog_candidate_count"] = len(items)
+            if len(items) == 1 and isinstance(items[0], dict):
+                profile["catalog_item_code"] = _clean_text(items[0].get("item_code"), limit=64)
+                profile["catalog_item_name"] = _clean_text(
+                    items[0].get("display_item_name") or items[0].get("item_name"),
+                    limit=160,
+                )
+            elif len(items) > 1:
+                profile["catalog_item_code"] = None
+                profile["catalog_item_name"] = None
 
     items = inputs.get("items")
     if isinstance(items, list) and items:
@@ -1066,6 +1114,8 @@ def update_lead_profile_from_tool(
         if first_item.get("uom"):
             profile["uom"] = first_item.get("uom")
         if first_item.get("item_code"):
+            profile["catalog_item_code"] = str(first_item.get("item_code"))
+            profile["catalog_item_name"] = profile.get("catalog_item_name") or profile.get("product_interest") or str(first_item.get("item_code"))
             profile["product_interest"] = profile.get("product_interest") or str(first_item.get("item_code"))
 
     if tool_name == "register_buyer" and tool_result.get("erp_customer_id"):
@@ -1143,9 +1193,11 @@ def update_lead_profile_from_tool(
         intent="",
     )
     profile["temperature"] = _temperature(int(profile["score"]))
+    _set_product_resolution_state(profile)
     profile["next_action"] = _next_action_for(
         status=str(profile.get("status") or "none"),
         stage=str(stage or ""),
+        intent="tool_result",
         profile=profile,
         customer_identified=customer_identified,
     )

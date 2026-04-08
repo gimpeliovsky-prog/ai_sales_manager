@@ -38,6 +38,9 @@ CATALOG_POLICY: list[str] = [
     "A customer may mention a unit in their own language even when the ERP catalog stores it under another label such as pcs; treat semantically equivalent units as the same, but in tool calls use the matching catalog UOM.",
     "If a catalog tool result has price_display_blocked=true, do not state a price or rate; ask for the missing product, quantity, or UOM shown in price_anchor.missing.",
     "If the requested UOM is unclear or unavailable, clarify before creating or updating an order.",
+    "Do not ask again for product, quantity, or UOM if the lead profile already contains them.",
+    "If product_resolution_status is broad and next_action is show_matching_options, call the catalog tool for the known product_interest and offer two or three matching items or variants.",
+    "If product_resolution_status is broad and next_action is select_specific_item, ask only for the exact model or variant; do not ask the customer to repeat the product category or confirmed UOM.",
     "Do not expose internal field names such as stock_uom, available_uoms, non_stock_uoms, or conversion_factor.",
 ]
 
@@ -154,6 +157,10 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None) -> list[str]:
         ("qualified_at", "Lead qualified at"),
         ("hot_at", "Lead became hot at"),
         ("product_interest", "Product interest"),
+        ("product_resolution_status", "Product resolution status"),
+        ("catalog_item_code", "Selected catalog item code"),
+        ("catalog_item_name", "Selected catalog item name"),
+        ("catalog_candidate_count", "Catalog candidate count"),
         ("quantity", "Quantity"),
         ("uom", "Unit"),
         ("requested_item_count", "Requested item count"),

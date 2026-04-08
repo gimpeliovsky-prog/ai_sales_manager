@@ -252,6 +252,8 @@ def _derive_stage_from_state(
         return "order_build", 0.86
     if next_action in {"ask_quantity", "ask_unit"}:
         return "clarify", 0.82
+    if next_action in {"show_matching_options", "select_specific_item"}:
+        return "discover", 0.84
     if status in {"qualified", "quote_needed"}:
         return ("order_build", 0.8) if customer_identified else ("clarify", 0.78)
     if intent == "browse_catalog":

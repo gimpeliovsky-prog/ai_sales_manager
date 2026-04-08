@@ -587,6 +587,46 @@ def run_lead_management_evals() -> list[str]:
             "qualification_priority_delivery_before_confirmation",
         )
     )
+    generic_product_selection_profile = update_lead_profile_from_message(
+        current_profile={"status": "qualified", "product_interest": "coffee machine", "quantity": 2, "uom": "box"},
+        user_text="2 boxes coffee machines",
+        stage="discover",
+        behavior_class="direct_buyer",
+        intent="order_detail",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            generic_product_selection_profile,
+            {
+                "product_resolution_status": "broad",
+                "qualification_priority": "specific_item_selection",
+                "next_action": "select_specific_item",
+            },
+            "qualification_priority_specific_item_before_contact_or_confirmation",
+        )
+    )
+    generic_product_browse_profile = update_lead_profile_from_message(
+        current_profile=generic_product_selection_profile,
+        user_text="which options do you have?",
+        stage="discover",
+        behavior_class="explorer",
+        intent="browse_catalog",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            generic_product_browse_profile,
+            {
+                "product_resolution_status": "broad",
+                "next_action": "show_matching_options",
+                "followup_strategy": "product_selection_missing",
+            },
+            "generic_product_browse_moves_to_show_matching_options",
+        )
+    )
     preserve_product_on_uom_reply = update_lead_profile_from_message(
         current_profile={"status": "new_lead", "product_interest": "backpack"},
         user_text="pieces",
@@ -647,8 +687,59 @@ def run_lead_management_evals() -> list[str]:
     failures.extend(
         _assert_subset(
             normalized_single_item_profile,
-            {"product_interest": "backpacks", "uom": "piece", "quantity": 10.0},
+            {
+                "product_interest": "backpacks",
+                "uom": "piece",
+                "quantity": 10.0,
+                "product_resolution_status": "broad",
+                "next_action": "select_specific_item",
+            },
             "single_item_compact_qty_uom_phrase_is_normalized",
+        )
+    )
+    catalog_resolution_profile = update_lead_profile_from_tool(
+        current_profile=normalized_single_item_profile,
+        tool_name="get_product_catalog",
+        inputs={"item_name": "backpacks"},
+        tool_result={
+            "items": [
+                {"item_code": "BP-1", "display_item_name": "Travel Backpack"},
+                {"item_code": "BP-2", "display_item_name": "City Backpack"},
+            ]
+        },
+        stage="discover",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            catalog_resolution_profile,
+            {
+                "catalog_candidate_count": 2,
+                "product_resolution_status": "broad",
+                "next_action": "select_specific_item",
+            },
+            "catalog_multiple_matches_keep_specific_item_selection_open",
+        )
+    )
+    catalog_single_match_profile = update_lead_profile_from_tool(
+        current_profile=normalized_single_item_profile,
+        tool_name="get_product_catalog",
+        inputs={"item_name": "backpacks"},
+        tool_result={"items": [{"item_code": "BP-1", "display_item_name": "Travel Backpack"}]},
+        stage="discover",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            catalog_single_match_profile,
+            {
+                "catalog_item_code": "BP-1",
+                "catalog_item_name": "Travel Backpack",
+                "product_resolution_status": "specific",
+            },
+            "catalog_single_match_resolves_specific_item",
         )
     )
 
