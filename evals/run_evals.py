@@ -533,6 +533,54 @@ def run_lead_management_evals() -> list[str]:
             "qualification_priority_delivery_before_confirmation",
         )
     )
+    preserve_product_on_uom_reply = update_lead_profile_from_message(
+        current_profile={"status": "new_lead", "product_interest": "backpack"},
+        user_text="pieces",
+        stage="clarify",
+        behavior_class="direct_buyer",
+        intent="find_product",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            preserve_product_on_uom_reply,
+            {"product_interest": "backpack", "uom": "piece", "next_action": "ask_quantity"},
+            "single_item_uom_reply_does_not_replace_product_interest",
+        )
+    )
+    preserve_product_on_qty_uom_reply = update_lead_profile_from_message(
+        current_profile={"status": "new_lead", "product_interest": "backpack", "uom": "piece"},
+        user_text="10 pcs",
+        stage="clarify",
+        behavior_class="direct_buyer",
+        intent="order_detail",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            preserve_product_on_qty_uom_reply,
+            {"product_interest": "backpack", "uom": "piece", "quantity": 10.0},
+            "single_item_qty_uom_reply_preserves_product_interest",
+        )
+    )
+    normalized_single_item_profile = update_lead_profile_from_message(
+        current_profile={"status": "none", "score": 0},
+        user_text="10pcs backpacks",
+        stage="clarify",
+        behavior_class="direct_buyer",
+        intent="find_product",
+        customer_identified=True,
+        active_order_name=None,
+    )
+    failures.extend(
+        _assert_subset(
+            normalized_single_item_profile,
+            {"product_interest": "backpacks", "uom": "piece", "quantity": 10.0},
+            "single_item_compact_qty_uom_phrase_is_normalized",
+        )
+    )
 
     sourced_profile = update_lead_profile_source(
         current_profile=profile,

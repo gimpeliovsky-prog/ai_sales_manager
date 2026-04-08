@@ -21,6 +21,7 @@ LEAD_STATUSES = {
 }
 
 _QTY_RE = re.compile(r"\b\d+(?:[.,]\d+)?\b")
+_COMPACT_QTY_UOM_RE = re.compile(r"(?<!\w)(?P<qty>\d+(?:[.,]\d+)?)(?P<uom>[^\W\d_]{1,16})(?!\w)", re.UNICODE)
 _ITEM_QTY_SEGMENT_RE = re.compile(r"^\s*(?P<name>.+?)\s+(?P<qty>\d+(?:[.,]\d+)?)(?:\s+(?P<uom>[^\d,;]+))?\s*$")
 _YES_RE = re.compile(
     r"(?:\byes\b|\byeah\b|\byep\b|\bok(?:ay)?\b|\bcorrect\b|\bright\b|\bconfirmed?\b|"
@@ -43,6 +44,25 @@ DEFAULT_MULTI_ITEM_UOM_TERMS: dict[str, list[str]] = {
         "\u05e7\u05d5\u05e4\u05e1\u05d0",
         "\u05e7\u05d5\u05e4\u05e1\u05d0\u05d5\u05ea",
         "\u05e7\u05d5\u05e4\u05e1\u05d5\u05ea",
+    ],
+}
+DEFAULT_SINGLE_ITEM_UOM_TERMS: dict[str, list[str]] = {
+    "piece": [
+        "piece",
+        "pieces",
+        "pc",
+        "pcs",
+        "unit",
+        "units",
+        "each",
+    ],
+    "box": list(DEFAULT_MULTI_ITEM_UOM_TERMS["box"]),
+    "pack": [
+        "pack",
+        "packs",
+        "package",
+        "packages",
+        "pkg",
     ],
 }
 
@@ -396,6 +416,81 @@ def _multi_item_uom_terms(config: dict[str, Any] | None) -> dict[str, list[str]]
     return terms
 
 
+def _single_item_uom_terms(config: dict[str, Any] | None) -> dict[str, list[str]]:
+    terms = {key: list(value) for key, value in DEFAULT_SINGLE_ITEM_UOM_TERMS.items()}
+    configured_terms = _lead_config(config).get("single_item_uom_terms")
+    if isinstance(configured_terms, dict):
+        for uom, values in configured_terms.items():
+            if not isinstance(values, list):
+                continue
+            clean_uom = str(uom or "").strip()
+            if not clean_uom:
+                continue
+            terms.setdefault(clean_uom, [])
+            terms[clean_uom].extend(str(value).strip() for value in values if str(value).strip())
+    return terms
+
+
+def _extract_single_item_uom(text: str, config: dict[str, Any] | None) -> str | None:
+    normalized = (text or "").casefold()
+    if not normalized:
+        return None
+    compact_match = _COMPACT_QTY_UOM_RE.search(text or "")
+    compact_uom = str(compact_match.group("uom") or "").strip() if compact_match else ""
+    for uom, terms in _single_item_uom_terms(config).items():
+        for term in terms:
+            clean_term = str(term or "").strip()
+            if not clean_term:
+                continue
+            if compact_uom and clean_term.casefold() == compact_uom.casefold():
+                return str(uom)
+            if re.search(rf"(?<!\w){re.escape(clean_term)}(?!\w)", normalized, re.IGNORECASE):
+                return str(uom)
+    return None
+
+
+def _normalize_single_item_interest(text: str, config: dict[str, Any] | None) -> str | None:
+    raw = str(text or "")
+    if not raw.strip():
+        return None
+    normalized = raw
+    normalized = re.sub(r"\b(?:i am looking for|i'm looking for|looking for|i want|want|need)\b", " ", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\b(?:a|an|the)\b", " ", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\d+(?:[.,]\d+)?", " ", normalized)
+    for terms in _single_item_uom_terms(config).values():
+        for term in terms:
+            clean_term = str(term or "").strip()
+            if clean_term:
+                normalized = re.sub(rf"(?<!\w){re.escape(clean_term)}(?!\w)", " ", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s+", " ", normalized).strip(" ,.;:-")
+    return _clean_text(normalized, limit=160)
+
+
+def _should_replace_product_interest(
+    *,
+    current_interest: str | None,
+    normalized_text: str | None,
+    resolved_intent: str,
+    extracted_uom: str | None,
+    qty: float | None,
+    config: dict[str, Any] | None,
+) -> bool:
+    if not normalized_text:
+        return False
+    if resolved_intent not in {"find_product", "browse_catalog"}:
+        return False
+    if not current_interest:
+        return True
+    candidate = _normalize_single_item_interest(normalized_text, config)
+    if not candidate:
+        return False
+    if extracted_uom and candidate.casefold() == str(extracted_uom).casefold():
+        return False
+    if qty is not None and len(candidate) <= 4:
+        return False
+    return candidate.casefold() != str(current_interest).casefold()
+
+
 def _configured_terms(config: dict[str, Any] | None, signal: str) -> list[str]:
     terms = list(DEFAULT_SIGNAL_TERMS.get(signal, []))
     configured_terms = _lead_config(config).get("signal_terms")
@@ -436,6 +531,13 @@ def _signal_matches(text: str, signal: str, config: dict[str, Any] | None = None
 
 def _first_qty(text: str) -> float | None:
     match = _QTY_RE.search(text or "")
+    if not match:
+        compact_match = _COMPACT_QTY_UOM_RE.search(text or "")
+        if compact_match:
+            try:
+                return float(str(compact_match.group("qty")).replace(",", "."))
+            except ValueError:
+                return None
     if not match:
         return None
     try:
@@ -737,6 +839,8 @@ def update_lead_profile_from_message(
     resolved_intent = str(intent or "")
     normalized_text = _clean_text(user_text)
     requested_items = _parse_requested_items(user_text)
+    qty = _first_qty(user_text)
+    extracted_uom = _extract_single_item_uom(user_text, lead_config)
 
     if requested_items:
         assumed_uom = _multi_item_default_uom(lead_config)
@@ -755,15 +859,24 @@ def update_lead_profile_from_message(
         confirmed_uom = _confirmed_multi_item_uom(user_text, profile, lead_config)
         if confirmed_uom:
             _apply_multi_item_uom(profile, confirmed_uom)
-    elif resolved_intent in {"find_product", "browse_catalog"} and normalized_text:
-        profile["product_interest"] = normalized_text
-        profile["need"] = profile.get("need") or normalized_text
+    elif _should_replace_product_interest(
+        current_interest=_clean_text(profile.get("product_interest")),
+        normalized_text=normalized_text,
+        resolved_intent=resolved_intent,
+        extracted_uom=extracted_uom,
+        qty=qty,
+        config=lead_config,
+    ):
+        normalized_interest = _normalize_single_item_interest(normalized_text, lead_config) or normalized_text
+        profile["product_interest"] = normalized_interest
+        profile["need"] = profile.get("need") or normalized_interest
     if resolved_intent == "order_detail" and normalized_text and not profile.get("need"):
         profile["need"] = normalized_text
 
-    qty = _first_qty(user_text)
     if qty is not None and not requested_items:
         profile["quantity"] = qty
+    if extracted_uom and not requested_items:
+        profile["uom"] = extracted_uom
     if _signal_matches(user_text, "urgency", lead_config):
         profile["urgency"] = "soon"
     if _signal_matches(user_text, "delivery", lead_config):
