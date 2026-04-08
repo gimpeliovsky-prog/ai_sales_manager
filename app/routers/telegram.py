@@ -23,7 +23,7 @@ from app.session_store import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-_DEBUG_CATALOG_COMMAND_RE = re.compile(r"^/debug_catalog(?:\s+(?P<secret>\S+))?\s*$", re.IGNORECASE)
+_DEBUG_CATALOG_COMMAND_RE = re.compile(r"^/debug_catalog(?:\s+\S+)?\s*$", re.IGNORECASE)
 
 _ORDER_PDF_RE = re.compile(
     r"^(?:/order|send me order|send order|send my order|order pdf|order file|пришли заказ|отправь заказ)$",
@@ -192,14 +192,8 @@ def _temporary_error_text(lang: str) -> str:
     return texts.get(lang, texts["en"])
 
 
-def _matches_debug_catalog_command(text: str, secret: str) -> bool:
-    configured_secret = str(secret or "").strip()
-    if not configured_secret:
-        return False
-    match = _DEBUG_CATALOG_COMMAND_RE.match(str(text or "").strip())
-    if not match:
-        return False
-    return str(match.group("secret") or "").strip() == configured_secret
+def _matches_debug_catalog_command(text: str) -> bool:
+    return bool(_DEBUG_CATALOG_COMMAND_RE.match(str(text or "").strip()))
 
 
 async def _debug_catalog_preview_text(*, lc, tenant: dict, lang: str, limit: int) -> str:
@@ -500,7 +494,7 @@ async def telegram_webhook(
     if text in ("/reset", "/новый"):
         await clear_session("telegram", chat_id)
         result = {"text": get_intro_message(greeting_lang), "documents": []}
-    elif _matches_debug_catalog_command(text, settings.telegram_debug_catalog_secret):
+    elif _matches_debug_catalog_command(text):
         result = {
             "text": await _debug_catalog_preview_text(
                 lc=lc,
