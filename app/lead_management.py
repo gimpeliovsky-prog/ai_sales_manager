@@ -302,6 +302,10 @@ def empty_lead_profile() -> dict[str, Any]:
         "availability_in_stock": None,
         "availability_total_available_qty": None,
         "availability_stock_uom": None,
+        "availability_warehouse": None,
+        "availability_default_warehouse": None,
+        "availability_known_warehouses": [],
+        "availability_needs_warehouse_selection": False,
         "availability_checked_at": None,
         "quantity": None,
         "uom": None,
@@ -1302,9 +1306,21 @@ def update_lead_profile_from_tool(
     if tool_name == "get_item_availability" and not tool_result.get("error"):
         profile["availability_item_code"] = _clean_text(tool_result.get("item_code"), limit=64)
         profile["availability_item_name"] = _clean_text(tool_result.get("item_name"), limit=160)
-        profile["availability_in_stock"] = bool(tool_result.get("in_stock"))
+        profile["availability_in_stock"] = tool_result.get("in_stock")
         profile["availability_total_available_qty"] = _first_number(tool_result.get("total_available_qty"))
         profile["availability_stock_uom"] = _clean_text(tool_result.get("stock_uom"), limit=32)
+        profile["availability_warehouse"] = _clean_text(
+            tool_result.get("effective_warehouse") or tool_result.get("requested_warehouse"),
+            limit=160,
+        )
+        profile["availability_default_warehouse"] = _clean_text(tool_result.get("default_warehouse"), limit=160)
+        known_warehouses = tool_result.get("known_warehouses")
+        profile["availability_known_warehouses"] = (
+            [str(item).strip() for item in known_warehouses if str(item).strip()]
+            if isinstance(known_warehouses, list)
+            else []
+        )
+        profile["availability_needs_warehouse_selection"] = bool(tool_result.get("needs_warehouse_selection"))
         profile["availability_checked_at"] = resolved_now.isoformat()
     if tool_name == "create_invoice" and tool_result.get("name"):
         profile["status"] = "won"

@@ -42,10 +42,19 @@ def build_availability_prefetch_context(tool_result: dict[str, Any]) -> str:
             "Do not promise stock or availability. "
             "Explain that stock could not be confirmed right now."
         )
+    if result.get("needs_warehouse_selection"):
+        known_warehouses = result.get("known_warehouses") if isinstance(result.get("known_warehouses"), list) else []
+        warehouse_hint = ", ".join(str(item).strip() for item in known_warehouses[:5] if str(item).strip())
+        suffix = f" Known warehouses: {warehouse_hint}." if warehouse_hint else ""
+        return (
+            f"Runtime availability lookup for {item_name} requires a warehouse selection before stock can be confirmed."
+            f"{suffix} Ask which warehouse should be checked. "
+            "Do not promise stock or total availability across all warehouses."
+        )
     in_stock = bool(result.get("in_stock"))
     total_available = result.get("total_available_qty")
     stock_uom = str(result.get("stock_uom") or "").strip()
-    warehouse_count = result.get("warehouse_count")
+    effective_warehouse = str(result.get("effective_warehouse") or "").strip()
     status_line = "available in stock" if in_stock else "not currently available in stock"
     qty_line = ""
     if total_available not in (None, ""):
@@ -54,8 +63,8 @@ def build_availability_prefetch_context(tool_result: dict[str, Any]) -> str:
             qty_line += f" {stock_uom}"
         qty_line += "."
     warehouse_line = ""
-    if warehouse_count not in (None, ""):
-        warehouse_line = f" Warehouse records checked: {warehouse_count}."
+    if effective_warehouse:
+        warehouse_line = f" Warehouse checked: {effective_warehouse}."
     return (
         f"Runtime availability lookup already ran for {item_name}. "
         f"This item is {status_line}.{qty_line}{warehouse_line} "
