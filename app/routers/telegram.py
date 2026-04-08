@@ -1,5 +1,4 @@
 import logging
-import json
 import re
 from datetime import UTC, datetime
 
@@ -198,27 +197,19 @@ def _matches_debug_catalog_command(text: str) -> bool:
 
 
 async def _debug_catalog_preview_text(*, lc, tenant: dict, lang: str, limit: int) -> str:
-    api_key = str(tenant.get("api_key") or "").strip()
-    api_secret = str(tenant.get("api_secret") or "").strip()
-    erpnext_url = str(tenant.get("erpnext_url") or "").rstrip("/")
-    if not (api_key and api_secret and erpnext_url):
-        return "Catalog debug is unavailable because tenant ERP credentials are missing."
-    params = {
-        "fields": json.dumps(["item_code", "item_name", "item_group"]),
-        "filters": json.dumps([["disabled", "=", 0]]),
-        "limit_page_length": max(1, int(limit)),
-        "order_by": "modified desc",
-    }
-    headers = {"Authorization": f"token {api_key}:{api_secret}"}
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(f"{erpnext_url}/api/resource/Item", params=params, headers=headers)
-            response.raise_for_status()
-            payload = response.json()
+        result = await lc.get_items(
+            str(tenant.get("company_code") or ""),
+            None,
+            None,
+            None if lang == "auto" else lang,
+            limit=max(1, int(limit)),
+            enrich=False,
+        )
     except Exception as exc:
         logger.warning("Telegram debug catalog preview failed: %s", exc)
         return f"Catalog debug request failed: {exc}"
-    items = payload.get("data") if isinstance(payload, dict) else None
+    items = result.get("items") if isinstance(result, dict) else None
     if not isinstance(items, list) or not items:
         return "Catalog returned no items for this tenant."
     lines = [f"Catalog preview, first {min(limit, len(items))} items:"]

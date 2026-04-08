@@ -123,6 +123,8 @@ class LicenseClient:
         item_group: str | None = None,
         item_name: str | None = None,
         lang: str | None = None,
+        limit: int | None = None,
+        enrich: bool | None = None,
     ) -> dict:
         params: dict[str, str] = {}
         if item_group:
@@ -131,6 +133,10 @@ class LicenseClient:
             params["item_name"] = item_name
         if lang:
             params["lang"] = lang
+        if limit is not None:
+            params["limit"] = str(limit)
+        if enrich is not None:
+            params["enrich"] = "true" if enrich else "false"
         return await self._get(f"/tenants/{company_code}/items", params or None)
 
     async def get_item(self, company_code: str, item_code: str, lang: str | None = None) -> dict:
