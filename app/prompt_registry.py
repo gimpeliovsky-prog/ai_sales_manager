@@ -317,22 +317,22 @@ def _runtime_policy_lines(
 
     if stage_key in {"new", "identify", "lead_capture", "discover", "clarify"}:
         catalog_indexes = [0, 1, 2, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-        order_indexes = [0, 1, 2]
+        order_indexes: list[int] = []
         service_indexes: list[int] = []
         playbook_indexes = [0, 1, 2, 3, 4, 5, 7, 8, 10]
     elif stage_key in {"order_build", "confirm"}:
         catalog_indexes = [0, 1, 2, 5, 7, 8, 9, 10, 11, 16]
-        order_indexes = [0, 1, 2, 3, 4, 6, 7]
+        order_indexes = [2, 3, 5, 6, 7]
         service_indexes = []
         playbook_indexes = [0, 3, 4, 5, 6, 8, 9, 10]
     elif stage_key in {"service", "invoice", "closed"}:
         catalog_indexes = [2, 5, 7, 9, 10, 16]
-        order_indexes = [1, 3, 4, 5, 6, 7]
+        order_indexes = [3, 5, 6, 7]
         service_indexes = [0, 1]
         playbook_indexes = [10]
     else:
         catalog_indexes = [2, 5, 8, 9, 10, 16]
-        order_indexes = [0, 1, 4, 6]
+        order_indexes = [3, 5, 6]
         service_indexes = [0, 1]
         playbook_indexes = [10]
 
