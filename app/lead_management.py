@@ -466,10 +466,19 @@ def _normalize_single_item_interest(text: str, config: dict[str, Any] | None) ->
     return _clean_text(normalized, limit=160)
 
 
+def _same_interest(a: str | None, b: str | None) -> bool:
+    left = str(a or "").strip().casefold()
+    right = str(b or "").strip().casefold()
+    if not left or not right:
+        return False
+    return left == right or left in right or right in left
+
+
 def _should_replace_product_interest(
     *,
     current_interest: str | None,
     normalized_text: str | None,
+    current_priority: str,
     resolved_intent: str,
     extracted_uom: str | None,
     qty: float | None,
@@ -479,16 +488,22 @@ def _should_replace_product_interest(
         return False
     if resolved_intent not in {"find_product", "browse_catalog"}:
         return False
-    if not current_interest:
-        return True
     candidate = _normalize_single_item_interest(normalized_text, config)
     if not candidate:
+        return False
+    if not current_interest:
+        return True
+    if _same_interest(candidate, current_interest):
         return False
     if extracted_uom and candidate.casefold() == str(extracted_uom).casefold():
         return False
     if qty is not None and len(candidate) <= 4:
         return False
-    return candidate.casefold() != str(current_interest).casefold()
+    if current_priority == "product_need":
+        return True
+    if qty is None and not extracted_uom:
+        return True
+    return False
 
 
 def _configured_terms(config: dict[str, Any] | None, signal: str) -> list[str]:
@@ -837,6 +852,14 @@ def update_lead_profile_from_message(
     resolved_now = datetime.now(UTC)
     resolved_stage = str(stage or "")
     resolved_intent = str(intent or "")
+    current_priority = str(profile.get("qualification_priority") or "")
+    if not current_priority:
+        current_priority, _ = _qualification_priority_for(
+            status=previous_status,
+            stage=resolved_stage,
+            profile=profile,
+            customer_identified=customer_identified,
+        )
     normalized_text = _clean_text(user_text)
     requested_items = _parse_requested_items(user_text)
     qty = _first_qty(user_text)
@@ -862,6 +885,7 @@ def update_lead_profile_from_message(
     elif _should_replace_product_interest(
         current_interest=_clean_text(profile.get("product_interest")),
         normalized_text=normalized_text,
+        current_priority=current_priority,
         resolved_intent=resolved_intent,
         extracted_uom=extracted_uom,
         qty=qty,
