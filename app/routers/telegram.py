@@ -1,4 +1,5 @@
 import logging
+import json
 import re
 from datetime import UTC, datetime
 
@@ -197,20 +198,34 @@ def _matches_debug_catalog_command(text: str) -> bool:
 
 
 async def _debug_catalog_preview_text(*, lc, tenant: dict, lang: str, limit: int) -> str:
-    result = await lc.get_items(
-        str(tenant.get("company_code") or ""),
-        None,
-        None,
-        None if lang == "auto" else lang,
-    )
-    items = result.get("items") if isinstance(result, dict) else None
+    api_key = str(tenant.get("api_key") or "").strip()
+    api_secret = str(tenant.get("api_secret") or "").strip()
+    erpnext_url = str(tenant.get("erpnext_url") or "").rstrip("/")
+    if not (api_key and api_secret and erpnext_url):
+        return "Catalog debug is unavailable because tenant ERP credentials are missing."
+    params = {
+        "fields": json.dumps(["item_code", "item_name", "item_group"]),
+        "filters": json.dumps([["disabled", "=", 0]]),
+        "limit_page_length": max(1, int(limit)),
+        "order_by": "modified desc",
+    }
+    headers = {"Authorization": f"token {api_key}:{api_secret}"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(f"{erpnext_url}/api/resource/Item", params=params, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:
+        logger.warning("Telegram debug catalog preview failed: %s", exc)
+        return f"Catalog debug request failed: {exc}"
+    items = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(items, list) or not items:
         return "Catalog returned no items for this tenant."
     lines = [f"Catalog preview, first {min(limit, len(items))} items:"]
     for index, item in enumerate(items[: max(1, limit)], start=1):
         if not isinstance(item, dict):
             continue
-        name = str(item.get("display_item_name") or item.get("item_name") or item.get("item_code") or "").strip()
+        name = str(item.get("item_name") or item.get("item_code") or "").strip()
         item_code = str(item.get("item_code") or "").strip()
         item_group = str(item.get("item_group") or "").strip()
         line = f"{index}. {name or 'Unnamed item'}"
@@ -495,15 +510,17 @@ async def telegram_webhook(
         await clear_session("telegram", chat_id)
         result = {"text": get_intro_message(greeting_lang), "documents": []}
     elif _matches_debug_catalog_command(text):
-        result = {
-            "text": await _debug_catalog_preview_text(
+        try:
+            debug_text = await _debug_catalog_preview_text(
                 lc=lc,
                 tenant=tenant,
                 lang=greeting_lang,
                 limit=max(1, int(settings.telegram_debug_catalog_limit or 5)),
-            ),
-            "documents": [],
-        }
+            )
+        except Exception:
+            logger.exception("Telegram debug catalog command failed")
+            debug_text = _temporary_error_text(greeting_lang)
+        result = {"text": debug_text, "documents": []}
     elif is_sales_owner_chat and text in {"/start", "/owner", "/sales_owner"}:
         result = {
             "text": "Sales owner Telegram chat registered for AI lead handoff.",
