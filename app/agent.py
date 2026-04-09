@@ -39,6 +39,7 @@ from app.license_client import get_license_client
 from app.llm_state_updater import parse_llm_state_update
 from app.outbound_channels import mark_sales_owner_notification, notify_sales_owner
 from app.order_confirmation import message_completes_order_details
+from app.phone_numbers import normalize_phone as _normalize_phone
 from app.prompt_registry import build_runtime_system_prompt
 from app.runtime_availability_context import build_availability_prefetch_context, selected_item_code, should_prefetch_item_availability
 from app.runtime_catalog_context import build_catalog_prefetch_context, catalog_prefetch_search_term, should_prefetch_catalog_options
@@ -573,17 +574,6 @@ async def _emit_handoff(
     except Exception as exc:
         logger.warning("Failed to create AI handoff in License Server: %s", exc)
         return None
-
-
-def _normalize_phone(text: str) -> str | None:
-    digits = re.sub(r"[^\d+]", "", text)
-    if not digits:
-        return None
-    if digits.startswith("+"):
-        normalized = "+" + re.sub(r"\D", "", digits[1:])
-    else:
-        normalized = "+" + re.sub(r"\D", "", digits)
-    return normalized if len(re.sub(r"\D", "", normalized)) >= 10 else None
 
 
 def _clean_intro_name_candidate(text: str) -> str | None:
