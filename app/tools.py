@@ -220,6 +220,18 @@ def _normalize_match_text(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9?-??-???\u0590-\u05FF\u0600-\u06FF]+", " ", text or "").strip().lower()
 
 
+def _token_search_variants(token: str) -> list[str]:
+    normalized = _normalize_match_text(token)
+    if not normalized:
+        return []
+    variants = [normalized]
+    if normalized.startswith("ה") and len(normalized) >= 4:
+        dearticled = normalized[1:]
+        if dearticled and dearticled not in variants:
+            variants.append(dearticled)
+    return variants
+
+
 def _extract_catalog_item_code(text: str | None) -> str | None:
     raw_text = str(text or "").strip()
     if not raw_text:
@@ -239,7 +251,14 @@ def _query_tokens(text: str | None) -> list[str]:
     normalized_query = normalize_catalog_lookup_query(text)
     if not normalized_query:
         normalized_query = text or ""
-    return [token for token in _normalize_match_text(normalized_query).split() if len(token) >= 3]
+    tokens: list[str] = []
+    for token in _normalize_match_text(normalized_query).split():
+        if len(token) < 3:
+            continue
+        for variant in _token_search_variants(token):
+            if len(variant) >= 3 and variant not in tokens:
+                tokens.append(variant)
+    return tokens
 
 
 def _build_search_candidates(*texts: str | None) -> list[str]:
@@ -250,6 +269,10 @@ def _build_search_candidates(*texts: str | None) -> list[str]:
             continue
         if normalized not in candidates:
             candidates.append(normalized)
+        for token in normalized.split():
+            for variant in _token_search_variants(token):
+                if variant not in candidates:
+                    candidates.append(variant)
         for token in _query_tokens(normalized):
             if token not in candidates:
                 candidates.append(token)
@@ -266,11 +289,21 @@ def _catalog_item_search_text(item: dict[str, Any]) -> str:
 
 
 def _token_matches(left: str, right: str) -> bool:
-    if left == right:
-        return True
-    if len(left) >= 4 and len(right) >= 4 and (left.startswith(right) or right.startswith(left)):
-        return True
-    return len(left) >= 5 and len(right) >= 5 and (left in right or right in left)
+    left_variants = _token_search_variants(left)
+    right_variants = _token_search_variants(right)
+    for left_variant in left_variants:
+        for right_variant in right_variants:
+            if left_variant == right_variant:
+                return True
+            if len(left_variant) >= 4 and len(right_variant) >= 4 and (
+                left_variant.startswith(right_variant) or right_variant.startswith(left_variant)
+            ):
+                return True
+            if len(left_variant) >= 5 and len(right_variant) >= 5 and (
+                left_variant in right_variant or right_variant in left_variant
+            ):
+                return True
+    return False
 
 
 def _catalog_item_matches_query(query: str | None, item: dict[str, Any]) -> bool:

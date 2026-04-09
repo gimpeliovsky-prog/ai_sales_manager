@@ -56,6 +56,7 @@ _YES_RE = yes_regex()
 _GENERIC_PRODUCT_TOKENS = generic_product_tokens()
 _PRODUCT_INTEREST_NOISE_TERMS = product_interest_noise_terms()
 _PRODUCT_INTEREST_FILLER_TERMS = product_interest_filler_terms()
+_HEBREW_DIRECT_OBJECT_RE = re.compile(r"(?<!\w)את(?!\w)", re.IGNORECASE)
 _CONTACT_INTRO_RE = re.compile(rf"(?is)(?:{contact_intro_regex().pattern})[:\s-]*")
 _COMMERCIAL_CUE_RE = re.compile(rf"(?is)(?:{commercial_cue_regex().pattern}).*")
 
@@ -313,7 +314,7 @@ def apply_llm_lead_patch(
 
     previous_interest = _clean_text(profile.get("product_interest"))
     if "product_interest" in patch:
-        normalized_interest = _normalize_single_item_interest(patch.get("product_interest"), lead_config) or _clean_text(patch.get("product_interest"))
+        normalized_interest = _normalize_single_item_interest(patch.get("product_interest"), lead_config)
         current_priority = str(profile.get("qualification_priority") or "product_need")
         patch_qty = _first_number(patch.get("quantity")) if "quantity" in patch else None
         patch_uom = canonical_uom(patch.get("uom"), merged_uom_config(lead_config, "single_item_uom_terms")) or _clean_text(patch.get("uom"), limit=40)
@@ -429,6 +430,7 @@ def _normalize_single_item_interest(text: str, config: dict[str, Any] | None) ->
     if not raw.strip():
         return None
     normalized = raw
+    normalized = re.sub(_HEBREW_DIRECT_OBJECT_RE, " ", normalized)
     normalized = re.sub(_BROWSE_SCAFFOLDING_RE, " ", normalized)
     for term in sorted({term for term in single_item_cleanup_terms(config) if term}, key=len, reverse=True):
         normalized = re.sub(_phrase_term_pattern(term), " ", normalized, flags=re.IGNORECASE)
@@ -441,7 +443,7 @@ def _normalize_single_item_interest(text: str, config: dict[str, Any] | None) ->
             if clean_term:
                 normalized = re.sub(rf"(?<!\w){re.escape(clean_term)}(?!\w)", " ", normalized, flags=re.IGNORECASE)
     normalized = _strip_product_interest_noise(normalized, config)
-    normalized = re.sub(r"\s+", " ", normalized).strip(" ,.;:-")
+    normalized = re.sub(r"\s+", " ", normalized).strip(" ,.;:!?-")
     return _clean_text(normalized, limit=160)
 
 
@@ -451,10 +453,11 @@ def normalize_catalog_lookup_query(text: str | None, config: dict[str, Any] | No
     if candidate:
         return candidate
     fallback = _strip_product_interest_noise(semantic or str(text or ""), config)
+    fallback = re.sub(_HEBREW_DIRECT_OBJECT_RE, " ", fallback)
     fallback = re.sub(_BROWSE_SCAFFOLDING_RE, " ", fallback)
     for term in sorted({term for term in single_item_cleanup_terms(config) if term}, key=len, reverse=True):
         fallback = re.sub(_phrase_term_pattern(term), " ", fallback, flags=re.IGNORECASE)
-    fallback = re.sub(r"\s+", " ", fallback).strip(" ,.;:-")
+    fallback = re.sub(r"\s+", " ", fallback).strip(" ,.;:!?-")
     return _clean_text(fallback, limit=160)
 
 
@@ -1085,7 +1088,7 @@ def update_lead_profile_from_message(
         qty=qty,
         config=lead_config,
     ):
-        normalized_interest = _normalize_single_item_interest(normalized_text, lead_config) or normalized_text
+        normalized_interest = _normalize_single_item_interest(normalized_text, lead_config)
         previous_interest = _clean_text(profile.get("product_interest"))
         if previous_interest and normalized_interest and not _same_interest(normalized_interest, previous_interest):
             _reset_product_qualification_state(
