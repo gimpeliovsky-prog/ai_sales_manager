@@ -17,6 +17,7 @@ from app.buyer_intake import (
     get_known_buyer_greeting as _known_buyer_greeting_text,
 )
 from app.conversation_flow import advance_stage_after_tool, classify_behavior, classify_intent, derive_conversation_state, get_handoff_message
+from app.conversation_boundary import is_short_greeting_message
 from app.config import get_settings
 from app.i18n import text as i18n_text
 from app.interaction_patterns import has_explicit_confirmation
@@ -1710,6 +1711,35 @@ async def _process_message_result_locked(
                 "source": "central_resolve",
             },
         )
+        if session.get("conversation_reopened") and is_short_greeting_message(user_text):
+            session["stage"] = "new"
+            session["stage_confidence"] = 0.98
+            session["behavior_class"] = "returning_customer"
+            session["behavior_confidence"] = 0.98
+            session["last_intent"] = "low_signal"
+            session["last_intent_confidence"] = 0.98
+            session["handoff_required"] = False
+            session["handoff_reason"] = None
+            session["returning_customer_announced"] = True
+            reply = get_known_buyer_greeting(current_lang, session.get("buyer_name"))
+            return await _finalize_intake_reply(
+                lc=lc,
+                company_code=company_code,
+                channel=channel,
+                channel_uid=channel_uid,
+                session=session,
+                user_text=user_text,
+                reply=reply,
+                result=result,
+                message_type="returning_customer_greeting",
+                payload={
+                    "erp_customer_id": session.get("erp_customer_id"),
+                    "buyer_identity_id": session.get("buyer_identity_id"),
+                    "buyer_name": session.get("buyer_name"),
+                    "buyer_company_name": session.get("buyer_company_name"),
+                    "conversation_reopened": True,
+                },
+            )
 
     if not session.get("erp_customer_id") and session.get("buyer_company_pending"):
         company_name = _clean_company_candidate(user_text)

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     ai_agent_token: str
     redis_url: str = "redis://localhost:6379"
     session_ttl_seconds: int = 86400
+    dialog_stale_after_hours: int = 4
     public_base_url: str = ""
     lead_followup_worker_enabled: bool = True
     lead_followup_scan_interval_seconds: int = 300

@@ -7,11 +7,11 @@ from typing import Any
 import redis.asyncio as aioredis
 
 from app.config import get_settings
+from app.conversation_boundary import reset_session_for_new_dialogue
 from app.lead_management import normalize_telegram_username
 
 logger = logging.getLogger(__name__)
 _redis: aioredis.Redis | None = None
-_DIALOG_STALE_AFTER = timedelta(hours=24)
 _ORDER_STALE_AFTER = timedelta(hours=12)
 _PENDING_CONFIRMATION_TTL = timedelta(minutes=20)
 
@@ -81,6 +81,8 @@ def _empty_session() -> dict[str, Any]:
         "recent_sales_orders": [],
         "recent_sales_invoices": [],
         "returning_customer_announced": False,
+        "conversation_reopened": False,
+        "conversation_closed_at": None,
         "channel_context": {},
         "lead_timeline": [],
         "sla_breaches": [],
@@ -225,20 +227,12 @@ def _parse_dt(value: Any) -> datetime | None:
 def _cleanup_session(session: dict[str, Any]) -> dict[str, Any]:
     now = datetime.now(UTC)
     last_interaction_at = _parse_dt(session.get("last_interaction_at"))
-    if last_interaction_at and now - last_interaction_at > _DIALOG_STALE_AFTER:
-        session["messages"] = []
-        session["last_sales_order_name"] = None
-        session["pending_confirmation_text"] = None
-        session["last_order_activity_at"] = None
-        session["pending_confirmation_set_at"] = None
-        session["returning_customer_announced"] = False
-        session["lead_profile"] = _empty_session()["lead_profile"]
-        session["lead_timeline"] = []
-        session["sla_breaches"] = []
-        session["conversation_quality_score"] = None
-        session["quality_flags"] = []
-        session["coaching_notes"] = []
-        session["quality_evaluated_at"] = None
+    stale_after = timedelta(hours=max(1, int(get_settings().dialog_stale_after_hours or 4)))
+    if last_interaction_at and now - last_interaction_at > stale_after:
+        refreshed = reset_session_for_new_dialogue(session, fresh_session=_empty_session())
+        refreshed["company_code"] = session.get("company_code")
+        refreshed["conversation_closed_at"] = now.isoformat()
+        session = refreshed
 
     last_order_activity_at = _parse_dt(session.get("last_order_activity_at"))
     if last_order_activity_at and now - last_order_activity_at > _ORDER_STALE_AFTER:
@@ -273,6 +267,7 @@ async def save_session(channel: str, uid: str, session: dict[str, Any]) -> None:
     now_iso = datetime.now(UTC).isoformat()
     session["messages"] = session.get("messages", [])[-40:]
     session["last_interaction_at"] = now_iso
+    session["conversation_reopened"] = False
     if session.get("last_sales_order_name"):
         session["last_order_activity_at"] = session.get("last_order_activity_at") or now_iso
     if session.get("pending_confirmation_text"):
