@@ -558,6 +558,43 @@ def _order_correction_requested(*, user_text: str, intent: str, active_order_nam
     return False
 
 
+def _infer_separate_order_requested(
+    *,
+    user_text: str,
+    stage: str,
+    intent: str,
+    active_order_name: str | None,
+    current_profile: dict[str, Any],
+    explicit_single_item_interest: str | None,
+    requested_items: list[dict[str, Any]],
+    qty: float | None,
+    extracted_uom: str | None,
+    config: dict[str, Any] | None,
+) -> bool:
+    if not active_order_name:
+        return False
+    if _signal_matches(user_text, "new_order", config):
+        return True
+    if str(current_profile.get("order_correction_status") or "").strip() == "requested":
+        return False
+    if intent in {"add_to_order", "service_request", "human_handoff"}:
+        return False
+    if _signal_matches(user_text, "order_correction", config):
+        return False
+    if stage not in {"invoice", "service", "closed"}:
+        return False
+    has_new_product_anchor = bool(
+        explicit_single_item_interest
+        and _substantive_product_tokens(explicit_single_item_interest)
+    ) or bool(requested_items)
+    if not has_new_product_anchor:
+        return False
+    has_order_details = bool(requested_items or qty is not None or extracted_uom)
+    if has_order_details:
+        return True
+    return intent in {"find_product", "browse_catalog", "order_detail"}
+
+
 def _signal_matches(text: str, signal: str, config: dict[str, Any] | None = None) -> bool:
     normalized = (text or "").casefold()
     if not normalized:
@@ -974,6 +1011,7 @@ def update_lead_profile_from_message(
     profile = normalize_lead_profile(current_profile)
     previous_status = str(profile.get("status") or "none")
     previous_temperature = str(profile.get("temperature") or "cold")
+    previous_correction_requested = str(profile.get("order_correction_status") or "").strip() == "requested"
     resolved_now = datetime.now(UTC)
     resolved_stage = str(stage or "")
     resolved_intent = str(intent or "")
@@ -997,7 +1035,18 @@ def update_lead_profile_from_message(
         active_order_name=active_order_name,
         config=lead_config,
     )
-    separate_order_requested = bool(active_order_name and _signal_matches(user_text, "new_order", lead_config))
+    separate_order_requested = _infer_separate_order_requested(
+        user_text=user_text,
+        stage=resolved_stage,
+        intent=resolved_intent,
+        active_order_name=active_order_name,
+        current_profile=profile,
+        explicit_single_item_interest=explicit_single_item_interest,
+        requested_items=requested_items,
+        qty=qty,
+        extracted_uom=extracted_uom,
+        config=lead_config,
+    )
     preserve_order_service_anchor = bool(
         active_order_name
         and resolved_stage in {"invoice", "service", "closed"}
@@ -1099,7 +1148,13 @@ def update_lead_profile_from_message(
         profile["decision_status"] = "ready_to_buy"
     elif resolved_intent in {"find_product", "browse_catalog"}:
         profile["decision_status"] = "evaluating"
-    if active_order_name and (resolved_intent == "order_detail" or correction_requested):
+    correction_context_continues = bool(
+        active_order_name
+        and previous_correction_requested
+        and not separate_order_requested
+        and resolved_intent in {"order_detail", "add_to_order", "confirm_order"}
+    )
+    if active_order_name and (correction_requested or correction_context_continues):
         profile["order_correction_status"] = "requested"
         profile["target_order_id"] = profile.get("target_order_id") or active_order_name
         profile["correction_type"] = profile.get("correction_type") or _correction_type(user_text)

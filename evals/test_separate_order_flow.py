@@ -38,6 +38,26 @@ class SeparateOrderFlowTests(unittest.TestCase):
         )
         self.assertEqual(state.get("stage"), "order_build")
 
+    def test_active_order_new_product_request_defaults_to_separate_order(self) -> None:
+        lead_profile = update_lead_profile_from_message(
+            current_profile={
+                "status": "order_created",
+                "product_interest": "\u05de\u05d4 \u05e9\u05dc\u05d5\u05de\u05da",
+                "need": "\u05de\u05d4 \u05e9\u05dc\u05d5\u05de\u05da",
+                "order_correction_status": "none",
+            },
+            user_text="\u05d0\u05e0\u05d9 \u05e8\u05d5\u05e6\u05d4 5 laptop",
+            stage="invoice",
+            behavior_class="returning_customer",
+            intent="order_detail",
+            customer_identified=True,
+            active_order_name="SO-1",
+        )
+        self.assertTrue(lead_profile.get("separate_order_requested"))
+        self.assertEqual(lead_profile.get("order_correction_status"), "none")
+        self.assertEqual(lead_profile.get("product_interest"), "laptop")
+        self.assertEqual(lead_profile.get("quantity"), 5.0)
+
     def test_tool_policy_allows_create_sales_order_from_invoice_when_separate_order_requested(self) -> None:
         session = {
             "stage": "invoice",

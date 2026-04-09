@@ -6,7 +6,8 @@
     "kg": ["kg", "kgs", "kilogram", "kilograms"],
     "g": ["g", "gr", "gram", "grams"],
     "l": ["l", "lt", "ltr", "liter", "liters", "litre", "litres"],
-    "m": ["m", "meter", "meters", "metre", "metres"]
+    "m": ["m", "meter", "meters", "metre", "metres"],
+    "set": ["set", "sets"]
   },
   "labels": {
     "piece": { "en": "pieces" },
@@ -15,6 +16,7 @@
     "kg": { "en": "kg" },
     "g": { "en": "g" },
     "l": { "en": "liters" },
-    "m": { "en": "meters" }
+    "m": { "en": "meters" },
+    "set": { "en": "sets" }
   }
 }

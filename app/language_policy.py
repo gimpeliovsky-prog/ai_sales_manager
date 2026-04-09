@@ -43,6 +43,15 @@ def resolve_conversation_language(
     detected_lang = detect_language(user_text, None)
     current_lang = normalized_locked_lang or detected_lang or default_lang
     if normalized_locked_lang:
+        if detected_lang and detected_lang != normalized_locked_lang and has_language_signal(user_text):
+            has_non_latin_signal = bool(
+                _HEBREW_RE.search(user_text)
+                or _ARABIC_RE.search(user_text)
+                or _CYRILLIC_RE.search(user_text)
+            )
+            has_only_english_signal = bool(_LATIN_RE.search(user_text)) and not has_non_latin_signal
+            if has_non_latin_signal or (detected_lang == "en" and has_only_english_signal and _EN_HINT_RE.search(user_text)):
+                return detected_lang, detected_lang
         return current_lang, None
     if detected_lang and has_language_signal(user_text):
         return current_lang, detected_lang

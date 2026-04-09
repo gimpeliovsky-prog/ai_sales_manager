@@ -30,6 +30,7 @@ from app.lead_runtime_config import lead_config_from_ai_policy
 from app.license_client import get_license_client
 from app.llm_state_updater import parse_llm_state_update
 from app.outbound_channels import mark_sales_owner_notification, notify_sales_owner
+from app.order_confirmation import message_completes_order_details
 from app.prompt_registry import build_runtime_system_prompt
 from app.runtime_availability_context import build_availability_prefetch_context, selected_item_code, should_prefetch_item_availability
 from app.runtime_catalog_context import build_catalog_prefetch_context, catalog_prefetch_search_term, should_prefetch_catalog_options
@@ -2082,6 +2083,13 @@ async def _process_message_result_locked(
                             confirmation_confirmed = bool(confirmation_result.get("confirmed"))
                             explicit_confirmation = has_explicit_confirmation(user_text)
                             if confirmation_confirmed and confirmation_confidence >= min_confidence:
+                                confirmation_override = True
+                            elif message_completes_order_details(
+                                tool_name=tool_name,
+                                session=session,
+                                user_text=user_text,
+                                tenant=tenant,
+                            ):
                                 confirmation_override = True
                             elif (
                                 _confirmation_classifier_enabled(tenant)
