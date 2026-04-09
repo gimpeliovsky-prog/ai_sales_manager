@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from app.license_client import LicenseClient
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.license_client import LicenseClient
 
 
 async def resolve_buyer(
@@ -38,6 +41,27 @@ async def resolve_buyer(
     return None, True
 
 
+async def resolve_buyer_from_intro(
+    session: dict,
+    company_code: str,
+    channel: str,
+    channel_uid: str,
+    full_name: str,
+    phone: str | None,
+    lc: LicenseClient,
+) -> dict | None:
+    result = await lc.resolve_buyer(
+        company_code,
+        channel_type=channel,
+        channel_user_id=channel_uid,
+        phone=phone,
+        full_name=full_name,
+    )
+    if isinstance(result, dict) and result.get("found"):
+        return result
+    return None
+
+
 async def create_buyer_from_intro(
     session: dict,
     company_code: str,
@@ -47,15 +71,12 @@ async def create_buyer_from_intro(
     phone: str | None,
     lc: LicenseClient,
 ) -> dict | None:
-    tg_chat_id = channel_uid if channel == "telegram" else None
-    result = await lc.create_buyer(
-        company_code,
-        full_name,
-        phone,
-        tg_chat_id,
-        channel_type=channel,
-        channel_user_id=channel_uid,
+    return await resolve_buyer_from_intro(
+        session=session,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        full_name=full_name,
+        phone=phone,
+        lc=lc,
     )
-    if result.get("found"):
-        return result
-    return None

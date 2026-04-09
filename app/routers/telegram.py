@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Path, Request
 
-from app.agent import get_intro_message, process_message_result
+from app.agent import get_intro_message, get_known_buyer_greeting, process_message_result
 from app.config import get_settings
 from app.i18n import text as i18n_text
 from app.lead_management import apply_sales_owner_action, build_lead_event_payload, normalize_telegram_username
@@ -533,7 +533,10 @@ async def telegram_webhook(
     elif text == "/start":
         known_buyer = await lc.find_buyer_by_telegram(tenant["company_code"], chat_id)
         if known_buyer.get("found"):
-            result = {"text": i18n_text("welcome.generic", greeting_lang), "documents": []}
+            result = {
+                "text": get_known_buyer_greeting(greeting_lang, known_buyer.get("erp_customer_name")),
+                "documents": [],
+            }
         else:
             await clear_session("telegram", chat_id)
             session = new_session(company_code=tenant.get("company_code"))

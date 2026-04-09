@@ -7,7 +7,13 @@ from typing import Any
 
 import httpx
 
-from app.buyer_resolver import create_buyer_from_intro, resolve_buyer
+from app.buyer_resolver import resolve_buyer, resolve_buyer_from_intro
+from app.buyer_intake import (
+    buyer_company_request_message as _buyer_company_request_message_text,
+    buyer_identity_review_message as _buyer_identity_review_message_text,
+    clean_company_candidate as _clean_company_candidate_text,
+    get_known_buyer_greeting as _known_buyer_greeting_text,
+)
 from app.conversation_flow import advance_stage_after_tool, classify_behavior, classify_intent, derive_conversation_state, get_handoff_message
 from app.config import get_settings
 from app.i18n import text as i18n_text
@@ -67,6 +73,42 @@ _INTRO_NAME_STOP_RE = re.compile(
     r")\b"
 )
 _PERSON_NAME_TOKEN_RE = re.compile(r"^[A-Za-zА-Яа-яЁё\u0590-\u05FF\u0600-\u06FF][A-Za-zА-Яа-яЁё\u0590-\u05FF\u0600-\u06FF'._-]*$")
+_COMPANY_PREFIX_RE = re.compile(
+    r"(?is)^\s*(?:"
+    r"i\s+work\s+(?:at|for)|i(?:\s*am|'m)\s+from|from|company|my\s+company\s+is|"
+    r"я\s+работаю\s+в|я\s+из|я\s+из\s+компании|компания|из\s+компании|"
+    r"אני\s+עובד(?:ת)?\s+ב|אני\s+מ|אני\s+מחברת|מחברת|מהחברה|שם\s+החברה(?:\s+שלי)?|"
+    r"أعمل\s+في|أنا\s+من|أنا\s+من\s+شركة|الشركة|شركة"
+    r")[\s,:-]*"
+)
+_GENERIC_COMPANY_VALUES = {
+    "company",
+    "my company",
+    "компания",
+    "из компании",
+    "חברה",
+    "החברה",
+    "شركة",
+    "الشركة",
+}
+_KNOWN_BUYER_GREETING = {
+    "en": "Hello, {buyer_name}. How can I help?",
+    "ru": "Здравствуйте, {buyer_name}. Чем могу помочь?",
+    "he": "שלום, {buyer_name}. איך אפשר לעזור?",
+    "ar": "مرحبًا، {buyer_name}. كيف أستطيع المساعدة؟",
+}
+_BUYER_COMPANY_REQUEST = {
+    "en": "Thanks, {buyer_name}. I couldn't match your phone to an existing customer yet. Which company do you work for?",
+    "ru": "Спасибо, {buyer_name}. Я пока не нашёл клиента по вашему номеру. В какой компании вы работаете?",
+    "he": "תודה, {buyer_name}. עדיין לא הצלחתי לזהות לקוח קיים לפי מספר הטלפון שלך. באיזו חברה אתה עובד?",
+    "ar": "شكرًا، {buyer_name}. لم أتمكن بعد من לזהות العميل الحالي לפי رقم الهاتف. في أي شركة تعمل؟",
+}
+_BUYER_IDENTITY_REVIEW = {
+    "en": "Thanks. I saved your details and sent them to a manager so they can link your contact to the correct company in ERP before we continue.",
+    "ru": "Спасибо. Я сохранил ваши данные и передал их менеджеру, чтобы он связал ваш контакт с нужной компанией в ERP перед продолжением.",
+    "he": "תודה. שמרתי את הפרטים שלך והעברתי אותם למנהל כדי שיקשר את איש הקשר שלך לחברה הנכונה ב-ERP לפני שנמשיך.",
+    "ar": "شكرًا. حفظت تفاصيلك وأرسلتها إلى المدير ليربط جهة الاتصال الخاصة بك بالشركة الصحيحة في ERP قبل أن نتابع.",
+}
 _MAX_OPENAI_INPUT_ITEMS = 48
 _MAX_OPENAI_INPUT_BYTES = 180_000
 _MAX_OPENAI_HISTORY_ITEMS = 10
@@ -582,13 +624,50 @@ def _extract_intro_contact(user_text: str) -> tuple[str | None, str | None]:
     return name, phone
 
 
+def _clean_company_candidate(text: str) -> str | None:
+    return _clean_company_candidate_text(text)
+
+
 def get_intro_message(lang: str) -> str:
     return i18n_text("intro.sales_contact", lang)
+
+
+def get_known_buyer_greeting(lang: str, buyer_name: str | None = None) -> str:
+    return _known_buyer_greeting_text(lang, buyer_name)
+
+
+def _buyer_company_request_message(lang: str, buyer_name: str | None = None) -> str:
+    return _buyer_company_request_message_text(lang, buyer_name)
+
+
+def _buyer_identity_review_message(lang: str) -> str:
+    return _buyer_identity_review_message_text(lang)
+
+
+def _clear_pending_buyer_state(session: dict[str, Any]) -> None:
+    session["buyer_company_name"] = None
+    session["buyer_company_pending"] = False
+    session["buyer_review_required"] = False
+
+
+def _set_pending_buyer_contact(session: dict[str, Any], *, full_name: str, phone: str) -> None:
+    session["erp_customer_id"] = None
+    session["buyer_identity_id"] = None
+    session["buyer_name"] = full_name
+    session["buyer_phone"] = phone
+    session["buyer_company_name"] = None
+    session["buyer_company_pending"] = True
+    session["buyer_review_required"] = False
+    session["buyer_recognized_via"] = "manual_intro_unmatched"
+    session["recent_sales_orders"] = []
+    session["recent_sales_invoices"] = []
+    session["returning_customer_announced"] = False
 
 
 def _apply_buyer_context(session: dict[str, Any], buyer_result: dict[str, Any]) -> None:
     if not isinstance(buyer_result, dict):
         return
+    _clear_pending_buyer_state(session)
     if buyer_result.get("erp_customer_id"):
         session["erp_customer_id"] = buyer_result.get("erp_customer_id")
     if buyer_result.get("erp_customer_name"):
@@ -621,6 +700,108 @@ def _maybe_prefix_returning_customer(session: dict[str, Any], lang: str, reply: 
         session["returning_customer_announced"] = True
         return f"{prefix} {reply}".strip()
     return reply
+
+
+async def _finalize_intake_reply(
+    *,
+    lc: Any,
+    company_code: str,
+    channel: str,
+    channel_uid: str,
+    session: dict[str, Any],
+    user_text: str,
+    reply: str,
+    result: dict[str, Any],
+    message_type: str,
+    payload: dict[str, Any] | None = None,
+    handoff_reason: str | None = None,
+    handoff_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    session["messages"].append({"role": "user", "content": user_text})
+    session["messages"].append({"role": "assistant", "content": reply})
+    session["messages"] = session.get("messages", [])[-40:]
+    await save_session(channel, channel_uid, session)
+    result["text"] = reply
+    if handoff_reason:
+        result["handoff_required"] = True
+        result["handoff_reason"] = handoff_reason
+        _log_event(
+            "conversation_outcome",
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            outcome="handoff",
+            stage=session.get("stage"),
+            handoff_reason=handoff_reason,
+            reply_preview=_preview_text(reply),
+        )
+        handoff_response = await _emit_handoff(
+            lc=lc,
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            reason=handoff_reason,
+            payload=handoff_payload or {},
+        )
+        await _emit_control_plane_event(
+            lc=lc,
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            event_type="handoff_triggered",
+            payload={
+                "reason": handoff_reason,
+                "stage": session.get("stage"),
+                "delivery_status": (
+                    handoff_response.get("delivery", {}).get("status") if isinstance(handoff_response, dict) else None
+                ),
+            },
+        )
+    else:
+        _log_event(
+            "conversation_outcome",
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            outcome=message_type,
+            stage=session.get("stage"),
+            reply_preview=_preview_text(reply),
+        )
+        await _emit_control_plane_event(
+            lc=lc,
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            event_type="conversation_outcome",
+            payload={
+                "outcome": message_type,
+                "stage": session.get("stage"),
+                "reply_preview": _preview_text(reply),
+            },
+        )
+    await _emit_transcript_message(
+        lc=lc,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        session=session,
+        role="user",
+        content=user_text,
+        message_type="chat",
+        payload={"lead_profile": session.get("lead_profile")},
+    )
+    await _emit_transcript_message(
+        lc=lc,
+        company_code=company_code,
+        channel=channel,
+        channel_uid=channel_uid,
+        session=session,
+        role="assistant",
+        content=reply,
+        message_type=message_type,
+        payload=payload or {},
+    )
+    return result
 
 
 def _build_system_prompt(
@@ -1514,10 +1695,80 @@ async def _process_message_result_locked(
             },
         )
 
+    if not session.get("erp_customer_id") and session.get("buyer_company_pending"):
+        company_name = _clean_company_candidate(user_text)
+        if not company_name:
+            session["stage"] = "identify"
+            session["stage_confidence"] = 0.97
+            reply = _buyer_company_request_message(current_lang, session.get("buyer_name"))
+            return await _finalize_intake_reply(
+                lc=lc,
+                company_code=company_code,
+                channel=channel,
+                channel_uid=channel_uid,
+                session=session,
+                user_text=user_text,
+                reply=reply,
+                result=result,
+                message_type="buyer_company_request",
+                payload={"buyer_name": session.get("buyer_name"), "buyer_phone": session.get("buyer_phone")},
+            )
+
+        session["buyer_company_name"] = company_name
+        session["buyer_company_pending"] = False
+        session["buyer_review_required"] = True
+        session["stage"] = "handoff"
+        session["stage_confidence"] = 0.99
+        session["handoff_required"] = True
+        session["handoff_reason"] = "buyer_identity_review_required"
+        await _emit_control_plane_event(
+            lc=lc,
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            event_type="buyer_company_captured",
+            payload={
+                "buyer_name": session.get("buyer_name"),
+                "buyer_phone": session.get("buyer_phone"),
+                "buyer_company_name": company_name,
+            },
+        )
+        reply = _buyer_identity_review_message(current_lang)
+        return await _finalize_intake_reply(
+            lc=lc,
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            session=session,
+            user_text=user_text,
+            reply=reply,
+            result=result,
+            message_type="handoff",
+            payload={
+                "reason": "buyer_identity_review_required",
+                "buyer_name": session.get("buyer_name"),
+                "buyer_phone": session.get("buyer_phone"),
+                "buyer_company_name": session.get("buyer_company_name"),
+                "handoff_summary": build_handoff_summary(session, reason="buyer_identity_review_required"),
+            },
+            handoff_reason="buyer_identity_review_required",
+            handoff_payload={
+                "stage": session.get("stage"),
+                "reply_preview": _preview_text(reply),
+                "erp_customer_id": session.get("erp_customer_id"),
+                "buyer_name": session.get("buyer_name"),
+                "buyer_phone": session.get("buyer_phone"),
+                "buyer_company_name": session.get("buyer_company_name"),
+                "handoff_summary": build_handoff_summary(session, reason="buyer_identity_review_required"),
+                "lead_profile": session.get("lead_profile"),
+                **_handoff_target(tenant),
+            },
+        )
+
     if needs_intro and not session.get("erp_customer_id"):
         intro_name, intro_phone = _extract_intro_contact(user_text)
         if intro_name and intro_phone:
-            buyer_result = await create_buyer_from_intro(
+            buyer_result = await resolve_buyer_from_intro(
                 session=session,
                 company_code=company_code,
                 channel=channel,
@@ -1543,6 +1794,48 @@ async def _process_message_result_locked(
                         "source": "intro_registration",
                     },
                 )
+            else:
+                _set_pending_buyer_contact(session, full_name=intro_name, phone=intro_phone)
+                session["stage"] = "identify"
+                session["stage_confidence"] = 0.97
+                await _emit_control_plane_event(
+                    lc=lc,
+                    company_code=company_code,
+                    channel=channel,
+                    channel_uid=channel_uid,
+                    event_type="buyer_contact_captured_unmatched",
+                    payload={"buyer_name": intro_name, "buyer_phone": intro_phone},
+                )
+                reply = _buyer_company_request_message(current_lang, intro_name)
+                return await _finalize_intake_reply(
+                    lc=lc,
+                    company_code=company_code,
+                    channel=channel,
+                    channel_uid=channel_uid,
+                    session=session,
+                    user_text=user_text,
+                    reply=reply,
+                    result=result,
+                    message_type="buyer_company_request",
+                    payload={"buyer_name": intro_name, "buyer_phone": intro_phone},
+                )
+        else:
+            session["stage"] = "identify"
+            session["stage_confidence"] = 0.97
+            session["handoff_required"] = False
+            session["handoff_reason"] = None
+            reply = get_intro_message(current_lang)
+            return await _finalize_intake_reply(
+                lc=lc,
+                company_code=company_code,
+                channel=channel,
+                channel_uid=channel_uid,
+                session=session,
+                user_text=user_text,
+                reply=reply,
+                result=result,
+                message_type="intro",
+            )
 
     active_order_name = session.get("last_sales_order_name")
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None

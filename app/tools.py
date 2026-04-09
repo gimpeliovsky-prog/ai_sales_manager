@@ -145,7 +145,7 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "name": "register_buyer",
-        "description": "Register or resolve a new buyer after receiving at least the buyer's full name. Include phone when the customer provided it.",
+        "description": "Resolve an existing buyer after receiving at least the buyer's full name. Include phone when the customer provided it. Do not create a new ERP customer from this tool.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -499,7 +499,7 @@ async def execute_tool(
 
 
 async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order_name, current_lang, user_text, channel, channel_uid, lc, ai_policy=None, lead_profile=None, confirmation_override=None):
-    from app.buyer_resolver import create_buyer_from_intro
+    from app.buyer_resolver import resolve_buyer_from_intro
 
     if name == "get_product_catalog":
         lead_config = ai_policy.get("lead_management") if isinstance(ai_policy, dict) and isinstance(ai_policy.get("lead_management"), dict) else ai_policy
@@ -619,7 +619,7 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
             return {"error": i18n_text("tool_error.no_active_order", current_lang, ai_policy=ai_policy), "error_code": "no_active_order"}
         return await lc.get_sales_order(company_code, sales_order_name)
     if name == "register_buyer":
-        buyer_result = await create_buyer_from_intro(
+        buyer_result = await resolve_buyer_from_intro(
             session={},
             company_code=company_code,
             channel=channel,
@@ -632,6 +632,8 @@ async def _dispatch(name, inp, company_code, erp_customer_id, active_sales_order
         return {
             "erp_customer_id": customer_id,
             "registered": customer_id is not None,
+            "found": customer_id is not None,
+            "needs_company_review": customer_id is None,
             "buyer_identity_id": buyer_result.get("buyer_identity_id") if isinstance(buyer_result, dict) else None,
             "recent_sales_orders": buyer_result.get("recent_sales_orders") if isinstance(buyer_result, dict) else [],
         }
