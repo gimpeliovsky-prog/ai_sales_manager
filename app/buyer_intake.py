@@ -40,6 +40,18 @@ _BUYER_IDENTITY_REVIEW = {
     "he": "תודה. שמרתי את הפרטים שלך והעברתי אותם למנהל כדי שיקשר את איש הקשר שלך לחברה הנכונה ב-ERP לפני שנמשיך.",
     "ar": "شكرًا. حفظت تفاصيلك وأرسلتها إلى المدير ليربط جهة الاتصال الخاصة بك بالشركة الصحيحة في ERP قبل أن نتابع.",
 }
+_BUYER_COMPANY_RETRY = {
+    "en": "I couldn't find this company in the official registry. Please send the full official company name or the company number.",
+    "ru": "Я не нашёл такую компанию в официальном реестре. Пришлите, пожалуйста, полное официальное название компании или номер компании.",
+    "he": "לא מצאתי את החברה הזאת במרשם הרשמי. שלח בבקשה את השם הרשמי המלא של החברה או את מספר החברה / ח.פ.",
+    "ar": "لم أجد هذه الشركة في السجل الرسمي. أرسل من فضلك الاسم الرسمي الكامل للشركة أو رقم الشركة.",
+}
+_BUYER_COMPANY_AMBIGUOUS = {
+    "en": "I found several companies. Reply with the exact company number or copy the official company name:\n{options}",
+    "ru": "Я нашёл несколько компаний. Ответьте точным номером компании или скопируйте официальное название:\n{options}",
+    "he": "מצאתי כמה חברות. שלח את מספר החברה המדויק או העתק את השם הרשמי:\n{options}",
+    "ar": "وجدت عدة شركات. أرسل رقم الشركة الدقيق أو انسخ الاسم الرسمي:\n{options}",
+}
 
 
 def clean_company_candidate(text: str) -> str | None:
@@ -66,10 +78,32 @@ def get_known_buyer_greeting(lang: str, buyer_name: str | None = None) -> str:
 
 
 def buyer_company_request_message(lang: str, buyer_name: str | None = None) -> str:
-    template = _BUYER_COMPANY_REQUEST.get(lang, _BUYER_COMPANY_REQUEST["en"])
     display_name = str(buyer_name or "").strip() or "there"
+    if lang == "he":
+        return f"תודה, {display_name}. עדיין לא הצלחתי לזהות לקוח קיים לפי מספר הטלפון שלך. שלח בבקשה את השם הרשמי של החברה או את מספר החברה / ח.פ."
+    if lang == "ru":
+        return (
+            f"Спасибо, {display_name}. Я пока не нашёл клиента по вашему номеру. "
+            "Пришлите, пожалуйста, официальное название компании или номер компании."
+        )
+    if lang == "ar":
+        return (
+            f"شكرًا، {display_name}. لم أتمكن بعد من تحديد العميل الحالي من رقم الهاتف. "
+            "أرسل من فضلك الاسم الرسمي للشركة أو رقم الشركة."
+        )
+    template = _BUYER_COMPANY_REQUEST.get(lang, _BUYER_COMPANY_REQUEST["en"])
     return template.format(buyer_name=display_name)
 
 
 def buyer_identity_review_message(lang: str) -> str:
     return _BUYER_IDENTITY_REVIEW.get(lang, _BUYER_IDENTITY_REVIEW["en"])
+
+
+def buyer_company_retry_message(lang: str) -> str:
+    return _BUYER_COMPANY_RETRY.get(lang, _BUYER_COMPANY_RETRY["en"])
+
+
+def buyer_company_ambiguous_message(lang: str, options: list[str]) -> str:
+    template = _BUYER_COMPANY_AMBIGUOUS.get(lang, _BUYER_COMPANY_AMBIGUOUS["en"])
+    rendered = "\n".join(str(option or "").strip() for option in options if str(option or "").strip())
+    return template.format(options=rendered)

@@ -167,6 +167,10 @@ def build_sales_owner_message(session: dict[str, Any], reason: str | None = None
         lines.append(f"РўРµР»РµС„РѕРЅ: {session.get('buyer_phone')}")
     if session.get("buyer_company_name"):
         lines.append(f"Компания: {session.get('buyer_company_name')}")
+    if session.get("buyer_company_registry_number"):
+        lines.append(f"Номер компании: {session.get('buyer_company_registry_number')}")
+    if session.get("buyer_review_case_id"):
+        lines.append(f"Review case: {session.get('buyer_review_case_id')}")
     if session.get("erp_customer_id"):
         lines.append(f"ERP customer: {session.get('erp_customer_id')}")
     if profile.get("source_channel") or profile.get("source_campaign") or profile.get("source_utm_campaign"):

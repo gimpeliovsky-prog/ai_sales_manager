@@ -89,6 +89,27 @@ class LicenseClient:
             },
         )
 
+    async def identify_buyer_company(
+        self,
+        company_code: str,
+        *,
+        channel_type: str,
+        channel_user_id: str,
+        full_name: str,
+        phone: str | None,
+        company_query: str,
+    ) -> dict:
+        return await self._post(
+            f"/tenants/{company_code}/buyers/identify-company",
+            {
+                "channel_type": channel_type,
+                "channel_user_id": channel_user_id,
+                "full_name": full_name,
+                "phone": phone,
+                "company_query": company_query,
+            },
+        )
+
     async def create_buyer(
         self,
         company_code: str,

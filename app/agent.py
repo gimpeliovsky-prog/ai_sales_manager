@@ -9,7 +9,9 @@ import httpx
 
 from app.buyer_resolver import resolve_buyer, resolve_buyer_from_intro
 from app.buyer_intake import (
+    buyer_company_ambiguous_message as _buyer_company_ambiguous_message_text,
     buyer_company_request_message as _buyer_company_request_message_text,
+    buyer_company_retry_message as _buyer_company_retry_message_text,
     buyer_identity_review_message as _buyer_identity_review_message_text,
     clean_company_candidate as _clean_company_candidate_text,
     get_known_buyer_greeting as _known_buyer_greeting_text,
@@ -644,10 +646,22 @@ def _buyer_identity_review_message(lang: str) -> str:
     return _buyer_identity_review_message_text(lang)
 
 
+def _buyer_company_retry_message(lang: str) -> str:
+    return _buyer_company_retry_message_text(lang)
+
+
+def _buyer_company_ambiguous_message(lang: str, options: list[str]) -> str:
+    return _buyer_company_ambiguous_message_text(lang, options)
+
+
 def _clear_pending_buyer_state(session: dict[str, Any]) -> None:
     session["buyer_company_name"] = None
+    session["buyer_company_registry_number"] = None
+    session["buyer_company_candidates"] = []
     session["buyer_company_pending"] = False
     session["buyer_review_required"] = False
+    session["buyer_review_case_id"] = None
+    session["buyer_identity_status"] = None
 
 
 def _set_pending_buyer_contact(session: dict[str, Any], *, full_name: str, phone: str) -> None:
@@ -656,8 +670,12 @@ def _set_pending_buyer_contact(session: dict[str, Any], *, full_name: str, phone
     session["buyer_name"] = full_name
     session["buyer_phone"] = phone
     session["buyer_company_name"] = None
+    session["buyer_company_registry_number"] = None
+    session["buyer_company_candidates"] = []
     session["buyer_company_pending"] = True
     session["buyer_review_required"] = False
+    session["buyer_review_case_id"] = None
+    session["buyer_identity_status"] = "unresolved_contact"
     session["buyer_recognized_via"] = "manual_intro_unmatched"
     session["recent_sales_orders"] = []
     session["recent_sales_invoices"] = []
@@ -675,12 +693,17 @@ def _apply_buyer_context(session: dict[str, Any], buyer_result: dict[str, Any]) 
         session["buyer_name"] = contact_name
     if buyer_result.get("erp_customer_name"):
         session["buyer_company_name"] = buyer_result.get("erp_customer_name")
+    if buyer_result.get("company_number"):
+        session["buyer_company_registry_number"] = buyer_result.get("company_number")
     if buyer_result.get("buyer_identity_id"):
         session["buyer_identity_id"] = buyer_result.get("buyer_identity_id")
     if buyer_result.get("phone"):
         session["buyer_phone"] = buyer_result.get("phone")
     if buyer_result.get("recognized_via"):
         session["buyer_recognized_via"] = buyer_result.get("recognized_via")
+    if buyer_result.get("recognition_status"):
+        session["buyer_identity_status"] = buyer_result.get("recognition_status")
+    session["buyer_review_required"] = bool(buyer_result.get("needs_review"))
     session["recent_sales_orders"] = buyer_result.get("recent_sales_orders") or []
     session["recent_sales_invoices"] = buyer_result.get("recent_sales_invoices") or []
     session["returning_customer_announced"] = False
@@ -1716,57 +1739,187 @@ async def _process_message_result_locked(
                 message_type="buyer_company_request",
                 payload={"buyer_name": session.get("buyer_name"), "buyer_phone": session.get("buyer_phone")},
             )
+        company_resolution = await lc.identify_buyer_company(
+            company_code,
+            channel_type=channel,
+            channel_user_id=channel_uid,
+            full_name=str(session.get("buyer_name") or "").strip(),
+            phone=session.get("buyer_phone"),
+            company_query=company_name,
+        )
+        match_status = str(company_resolution.get("match_status") or "none").strip() or "none"
+        if match_status == "ambiguous":
+            candidates = company_resolution.get("candidates") or []
+            option_lines: list[str] = []
+            session["buyer_company_candidates"] = candidates if isinstance(candidates, list) else []
+            for index, candidate in enumerate(session["buyer_company_candidates"][:5], start=1):
+                if not isinstance(candidate, dict):
+                    continue
+                number = str(candidate.get("company_number") or "").strip()
+                name = str(candidate.get("company_name") or "").strip()
+                if number and name:
+                    option_lines.append(f"{index}. {name} ({number})")
+            session["stage"] = "identify"
+            session["stage_confidence"] = 0.98
+            reply = _buyer_company_ambiguous_message(current_lang, option_lines)
+            return await _finalize_intake_reply(
+                lc=lc,
+                company_code=company_code,
+                channel=channel,
+                channel_uid=channel_uid,
+                session=session,
+                user_text=user_text,
+                reply=reply,
+                result=result,
+                message_type="buyer_company_request",
+                payload={
+                    "buyer_name": session.get("buyer_name"),
+                    "buyer_phone": session.get("buyer_phone"),
+                    "company_query": company_name,
+                    "company_candidates": session.get("buyer_company_candidates"),
+                },
+            )
 
-        session["buyer_company_name"] = company_name
+        if match_status == "none":
+            session["stage"] = "identify"
+            session["stage_confidence"] = 0.98
+            reply = _buyer_company_retry_message(current_lang)
+            return await _finalize_intake_reply(
+                lc=lc,
+                company_code=company_code,
+                channel=channel,
+                channel_uid=channel_uid,
+                session=session,
+                user_text=user_text,
+                reply=reply,
+                result=result,
+                message_type="buyer_company_request",
+                payload={
+                    "buyer_name": session.get("buyer_name"),
+                    "buyer_phone": session.get("buyer_phone"),
+                    "company_query": company_name,
+                },
+            )
+
+        candidate = company_resolution.get("candidate") if isinstance(company_resolution.get("candidate"), dict) else {}
+        official_company_name = str(candidate.get("company_name") or "").strip() or company_name
+        company_number = str(candidate.get("company_number") or "").strip() or None
+        session["buyer_company_name"] = official_company_name
+        session["buyer_company_registry_number"] = company_number
+        session["buyer_company_candidates"] = []
         session["buyer_company_pending"] = False
-        session["buyer_review_required"] = True
-        session["stage"] = "handoff"
-        session["stage_confidence"] = 0.99
-        session["handoff_required"] = True
-        session["handoff_reason"] = "buyer_identity_review_required"
-        await _emit_control_plane_event(
-            lc=lc,
-            company_code=company_code,
-            channel=channel,
-            channel_uid=channel_uid,
-            event_type="buyer_company_captured",
-            payload={
-                "buyer_name": session.get("buyer_name"),
-                "buyer_phone": session.get("buyer_phone"),
-                "buyer_company_name": company_name,
-            },
-        )
-        reply = _buyer_identity_review_message(current_lang)
-        return await _finalize_intake_reply(
-            lc=lc,
-            company_code=company_code,
-            channel=channel,
-            channel_uid=channel_uid,
-            session=session,
-            user_text=user_text,
-            reply=reply,
-            result=result,
-            message_type="handoff",
-            payload={
-                "reason": "buyer_identity_review_required",
-                "buyer_name": session.get("buyer_name"),
-                "buyer_phone": session.get("buyer_phone"),
-                "buyer_company_name": session.get("buyer_company_name"),
-                "handoff_summary": build_handoff_summary(session, reason="buyer_identity_review_required"),
-            },
-            handoff_reason="buyer_identity_review_required",
-            handoff_payload={
-                "stage": session.get("stage"),
-                "reply_preview": _preview_text(reply),
-                "erp_customer_id": session.get("erp_customer_id"),
-                "buyer_name": session.get("buyer_name"),
-                "buyer_phone": session.get("buyer_phone"),
-                "buyer_company_name": session.get("buyer_company_name"),
-                "handoff_summary": build_handoff_summary(session, reason="buyer_identity_review_required"),
-                "lead_profile": session.get("lead_profile"),
-                **_handoff_target(tenant),
-            },
-        )
+        session["buyer_identity_status"] = company_resolution.get("recognition_status")
+        if company_resolution.get("found") and company_resolution.get("erp_customer_id"):
+            _apply_buyer_context(
+                session,
+                {
+                    "erp_customer_id": company_resolution.get("erp_customer_id"),
+                    "erp_customer_name": company_resolution.get("erp_customer_name") or official_company_name,
+                    "buyer_identity_id": company_resolution.get("buyer_identity_id"),
+                    "contact_name": session.get("buyer_name"),
+                    "phone": session.get("buyer_phone"),
+                    "recognized_via": "company_registry",
+                    "recognition_status": company_resolution.get("recognition_status"),
+                    "match_confidence": company_resolution.get("match_confidence"),
+                    "needs_review": company_resolution.get("needs_review"),
+                    "company_number": company_number,
+                    "recent_sales_orders": company_resolution.get("recent_sales_orders") or [],
+                    "recent_sales_invoices": company_resolution.get("recent_sales_invoices") or [],
+                },
+            )
+            await _emit_control_plane_event(
+                lc=lc,
+                company_code=company_code,
+                channel=channel,
+                channel_uid=channel_uid,
+                event_type="buyer_resolved",
+                payload={
+                    "erp_customer_id": session.get("erp_customer_id"),
+                    "buyer_identity_id": session.get("buyer_identity_id"),
+                    "recognized_via": "company_registry",
+                    "recognition_status": session.get("buyer_identity_status"),
+                    "buyer_company_name": session.get("buyer_company_name"),
+                    "buyer_company_registry_number": session.get("buyer_company_registry_number"),
+                },
+            )
+            session["stage"] = "identify"
+            session["stage_confidence"] = 0.98
+            reply = get_known_buyer_greeting(current_lang, session.get("buyer_name"))
+            return await _finalize_intake_reply(
+                lc=lc,
+                company_code=company_code,
+                channel=channel,
+                channel_uid=channel_uid,
+                session=session,
+                user_text=user_text,
+                reply=reply,
+                result=result,
+                message_type="buyer_resolved",
+                payload={
+                    "erp_customer_id": session.get("erp_customer_id"),
+                    "buyer_identity_id": session.get("buyer_identity_id"),
+                    "buyer_name": session.get("buyer_name"),
+                    "buyer_company_name": session.get("buyer_company_name"),
+                    "buyer_company_registry_number": session.get("buyer_company_registry_number"),
+                    "recognition_status": session.get("buyer_identity_status"),
+                },
+            )
+        else:
+            session["buyer_review_required"] = True
+            session["buyer_review_case_id"] = company_resolution.get("review_case_id")
+            session["stage"] = "handoff"
+            session["stage_confidence"] = 0.99
+            session["handoff_required"] = True
+            session["handoff_reason"] = "buyer_identity_review_required"
+            await _emit_control_plane_event(
+                lc=lc,
+                company_code=company_code,
+                channel=channel,
+                channel_uid=channel_uid,
+                event_type="buyer_company_captured",
+                payload={
+                    "buyer_name": session.get("buyer_name"),
+                    "buyer_phone": session.get("buyer_phone"),
+                    "buyer_company_name": session.get("buyer_company_name"),
+                    "buyer_company_registry_number": session.get("buyer_company_registry_number"),
+                    "buyer_review_case_id": session.get("buyer_review_case_id"),
+                },
+            )
+            reply = _buyer_identity_review_message(current_lang)
+            return await _finalize_intake_reply(
+                lc=lc,
+                company_code=company_code,
+                channel=channel,
+                channel_uid=channel_uid,
+                session=session,
+                user_text=user_text,
+                reply=reply,
+                result=result,
+                message_type="handoff",
+                payload={
+                    "reason": "buyer_identity_review_required",
+                    "buyer_name": session.get("buyer_name"),
+                    "buyer_phone": session.get("buyer_phone"),
+                    "buyer_company_name": session.get("buyer_company_name"),
+                    "buyer_company_registry_number": session.get("buyer_company_registry_number"),
+                    "buyer_review_case_id": session.get("buyer_review_case_id"),
+                    "handoff_summary": build_handoff_summary(session, reason="buyer_identity_review_required"),
+                },
+                handoff_reason="buyer_identity_review_required",
+                handoff_payload={
+                    "stage": session.get("stage"),
+                    "reply_preview": _preview_text(reply),
+                    "erp_customer_id": session.get("erp_customer_id"),
+                    "buyer_name": session.get("buyer_name"),
+                    "buyer_phone": session.get("buyer_phone"),
+                    "buyer_company_name": session.get("buyer_company_name"),
+                    "buyer_company_registry_number": session.get("buyer_company_registry_number"),
+                    "buyer_review_case_id": session.get("buyer_review_case_id"),
+                    "handoff_summary": build_handoff_summary(session, reason="buyer_identity_review_required"),
+                    "lead_profile": session.get("lead_profile"),
+                    **_handoff_target(tenant),
+                },
+            )
 
     if needs_intro and not session.get("erp_customer_id"):
         intro_name, intro_phone = _extract_intro_contact(user_text)
