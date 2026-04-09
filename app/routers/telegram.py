@@ -534,7 +534,10 @@ async def telegram_webhook(
         known_buyer = await lc.find_buyer_by_telegram(tenant["company_code"], chat_id)
         if known_buyer.get("found"):
             result = {
-                "text": get_known_buyer_greeting(greeting_lang, known_buyer.get("erp_customer_name")),
+                "text": get_known_buyer_greeting(
+                    greeting_lang,
+                    known_buyer.get("contact_name") or known_buyer.get("erp_customer_name"),
+                ),
                 "documents": [],
             }
         else:

@@ -17,7 +17,8 @@ async def resolve_buyer(
         return {
             "found": True,
             "erp_customer_id": session.get("erp_customer_id"),
-            "erp_customer_name": session.get("buyer_name"),
+            "erp_customer_name": session.get("buyer_company_name"),
+            "contact_name": session.get("buyer_name"),
             "buyer_identity_id": session.get("buyer_identity_id"),
             "phone": session.get("buyer_phone"),
             "recognized_via": "session",

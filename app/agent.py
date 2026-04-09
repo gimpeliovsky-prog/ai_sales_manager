@@ -670,8 +670,11 @@ def _apply_buyer_context(session: dict[str, Any], buyer_result: dict[str, Any]) 
     _clear_pending_buyer_state(session)
     if buyer_result.get("erp_customer_id"):
         session["erp_customer_id"] = buyer_result.get("erp_customer_id")
+    contact_name = buyer_result.get("contact_name") or buyer_result.get("erp_customer_name")
+    if contact_name:
+        session["buyer_name"] = contact_name
     if buyer_result.get("erp_customer_name"):
-        session["buyer_name"] = buyer_result.get("erp_customer_name")
+        session["buyer_company_name"] = buyer_result.get("erp_customer_name")
     if buyer_result.get("buyer_identity_id"):
         session["buyer_identity_id"] = buyer_result.get("buyer_identity_id")
     if buyer_result.get("phone"):
