@@ -1,6 +1,6 @@
 import unittest
 
-from app.llm_state_updater import parse_llm_state_update
+from app.llm_state_updater import parse_llm_signal_classification, parse_llm_state_update
 
 
 class LlmStateUpdaterTests(unittest.TestCase):
@@ -22,6 +22,22 @@ class LlmStateUpdaterTests(unittest.TestCase):
         )
         self.assertTrue(parsed["valid"])
         self.assertEqual(parsed["lead_patch"], {})
+
+    def test_parse_signal_classifier_output(self) -> None:
+        parsed = parse_llm_signal_classification(
+            '{"signal_type":"price_objection","signal_emotion":"skeptical","signal_preserves_deal":true,"confidence":0.91,"reason":"Customer says the offer is too expensive."}'
+        )
+        self.assertTrue(parsed["valid"])
+        self.assertEqual(parsed["signal_type"], "price_objection")
+        self.assertEqual(parsed["signal_emotion"], "skeptical")
+        self.assertTrue(parsed["signal_preserves_deal"])
+
+    def test_parse_signal_classifier_rejects_unknown_signal(self) -> None:
+        parsed = parse_llm_signal_classification(
+            '{"signal_type":"unknown_thing","signal_emotion":"neutral","signal_preserves_deal":true,"confidence":0.8}'
+        )
+        self.assertFalse(parsed["valid"])
+        self.assertIsNone(parsed["signal_type"])
 
 
 if __name__ == "__main__":

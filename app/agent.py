@@ -55,7 +55,7 @@ from app.lead_management import (
 )
 from app.lead_runtime_config import lead_config_from_ai_policy
 from app.license_client import get_license_client
-from app.llm_state_updater import parse_llm_state_update
+from app.llm_state_updater import parse_llm_signal_classification, parse_llm_state_update
 from app.outbound_channels import mark_sales_owner_notification, notify_sales_owner
 from app.order_confirmation import message_completes_order_details
 from app.phone_numbers import normalize_phone as _normalize_phone
@@ -1589,6 +1589,23 @@ def _state_updater_min_confidence(tenant: dict[str, Any]) -> float:
         return 0.55
 
 
+def _signal_classifier_enabled(tenant: dict[str, Any]) -> bool:
+    ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
+    sales_policy = ai_policy.get("sales_policy") if isinstance(ai_policy.get("sales_policy"), dict) else {}
+    if "llm_signal_classifier_enabled" in sales_policy:
+        return bool(sales_policy.get("llm_signal_classifier_enabled"))
+    return bool(sales_policy.get("llm_state_updater_enabled", False))
+
+
+def _signal_classifier_min_confidence(tenant: dict[str, Any]) -> float:
+    ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
+    sales_policy = ai_policy.get("sales_policy") if isinstance(ai_policy.get("sales_policy"), dict) else {}
+    try:
+        return max(0.4, min(0.99, float(sales_policy.get("llm_signal_classifier_min_confidence", 0.58) or 0.58)))
+    except (TypeError, ValueError):
+        return 0.58
+
+
 def _confirmation_min_confidence(tenant: dict[str, Any]) -> float:
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else {}
     sales_policy = ai_policy.get("sales_policy") if isinstance(ai_policy.get("sales_policy"), dict) else {}
@@ -1618,6 +1635,22 @@ def _parse_confirmation_classifier_response(text: str) -> dict[str, Any]:
         "confidence": max(0.0, min(1.0, confidence)),
         "reason": _preview_text(str(payload.get("reason") or "")),
     }
+
+
+def _intent_from_signal_classifier(*, signal_type: str, current_intent: str) -> str:
+    if signal_type == "small_talk":
+        return "small_talk"
+    if signal_type in {"service_request", "delivery_question", "availability_question"}:
+        return "service_request"
+    if signal_type == "handoff_request":
+        return "human_handoff"
+    if signal_type == "confirmation":
+        return "confirm_order"
+    if signal_type in {"low_signal", "frustration"}:
+        return "low_signal"
+    if signal_type in {"topic_shift", "deal_progress"}:
+        return current_intent
+    return current_intent
 
 
 async def _classify_state_with_llm(
@@ -1712,6 +1745,81 @@ async def _classify_state_with_llm(
     result = parse_llm_state_update(_extract_output_text(response.json()))
     result["source"] = "llm"
     return result
+
+
+async def _classify_signal_with_llm(
+    *,
+    client: httpx.AsyncClient,
+    api_key: str,
+    model: str,
+    user_text: str,
+    session: dict[str, Any],
+) -> dict[str, Any]:
+    lead_profile = normalize_lead_profile(active_lead_profile(session))
+    recent_messages: list[dict[str, Any]] = []
+    for row in list(session.get("messages") or [])[-6:]:
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("role") or "").strip()
+        content = _preview_text(str(row.get("content") or ""))
+        if role and content:
+            recent_messages.append({"role": role, "content": content})
+    payload = {
+        "model": model,
+        "instructions": (
+            "Classify only the customer's latest conversational signal. "
+            "Return only compact JSON with keys: signal_type, signal_emotion, signal_preserves_deal, confidence, reason. "
+            "signal_type must be one of: deal_progress, small_talk, price_objection, discount_request, analogs_request, comparison_request, delivery_question, availability_question, topic_shift, frustration, confirmation, service_request, stalling, resume_previous_context, low_signal, handoff_request. "
+            "signal_emotion must be one of: neutral, positive, impatient, skeptical. "
+            "signal_preserves_deal must be true when the current commercial thread should remain active after handling this message, and false only when the customer is explicitly moving away from it. "
+            "Use small_talk for greetings, social check-ins, and politeness in any language. "
+            "Use price_objection for 'expensive', 'too much', or equivalent multilingual objections when the deal should continue. "
+            "Use discount_request only when the customer is explicitly asking for a discount or better price terms. "
+            "Use analogs_request or comparison_request when the customer wants alternatives or comparison, not when they are merely greeting. "
+            "Use service_request, delivery_question, or availability_question when the customer asks for operational help about the current item or order. "
+            "Use topic_shift when the customer is clearly switching to another product, another order, or another commercial thread. "
+            "Use resume_previous_context when the customer is clearly returning to a previously open thread. "
+            "Do not infer product details, quantity, UOM, or next actions. Focus only on the signal. "
+            "Use any customer language. If unsure, prefer low_signal with lower confidence."
+        ),
+        "input": [
+            {
+                "role": "system",
+                "content": json.dumps(
+                    {
+                        "current_stage": session.get("stage"),
+                        "current_signal_type": session.get("signal_type"),
+                        "current_behavior_class": session.get("behavior_class"),
+                        "current_context_type": session.get("contexts", {}).get(session.get("active_context_id"), {}).get("context_type") if isinstance(session.get("contexts"), dict) else None,
+                        "customer_identified": bool(session.get("erp_customer_id")),
+                        "active_order_name": session.get("last_sales_order_name"),
+                        "lead_profile": {
+                            "status": lead_profile.get("status"),
+                            "product_interest": lead_profile.get("product_interest"),
+                            "catalog_item_name": lead_profile.get("catalog_item_name"),
+                            "quantity": lead_profile.get("quantity"),
+                            "uom": lead_profile.get("uom"),
+                            "next_action": lead_profile.get("next_action"),
+                        },
+                        "recent_messages": recent_messages,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+            {"role": "user", "content": user_text},
+        ],
+        "max_output_tokens": 180,
+    }
+    response = await client.post(
+        "https://api.openai.com/v1/responses",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+    )
+    response.raise_for_status()
+    return parse_llm_signal_classification(_extract_output_text(response.json()))
 
 
 async def _classify_order_confirmation_with_llm(
@@ -2225,6 +2333,20 @@ async def _process_message_result_locked(
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None
     previous_lead_profile = normalize_lead_profile(active_lead_profile(session))
     llm_state_result: dict[str, Any] | None = None
+    llm_signal_result: dict[str, Any] | None = None
+    if _signal_classifier_enabled(tenant):
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as signal_client:
+                llm_signal_result = await _classify_signal_with_llm(
+                    client=signal_client,
+                    api_key=settings.openai_api_key,
+                    model=settings.openai_model,
+                    user_text=user_text,
+                    session=session,
+                )
+        except Exception as exc:
+            logger.warning("LLM signal classifier failed: %s", exc)
+            llm_signal_result = {"valid": False, "reason": str(exc), "source": "error"}
     if _state_updater_enabled(tenant):
         try:
             async with httpx.AsyncClient(timeout=30.0) as state_client:
@@ -2245,6 +2367,9 @@ async def _process_message_result_locked(
     llm_confidence = float(llm_state_result.get("confidence") or 0) if llm_is_valid else 0.0
     llm_intent = str(llm_state_result.get("intent") or "") if llm_is_valid else ""
     llm_signal_type = str(llm_state_result.get("signal_type") or "") if llm_is_valid else ""
+    llm_signal_is_valid = isinstance(llm_signal_result, dict) and llm_signal_result.get("valid")
+    llm_signal_confidence = float(llm_signal_result.get("confidence") or 0) if llm_signal_is_valid else 0.0
+    use_llm_signal = llm_signal_is_valid and llm_signal_confidence >= _signal_classifier_min_confidence(tenant)
     use_llm_state = (
         llm_is_valid
         and (
@@ -2271,6 +2396,12 @@ async def _process_message_result_locked(
     if not behavior_class:
         behavior_class = fallback_behavior_class
         behavior_confidence = fallback_behavior_confidence
+    resolved_llm_signal_type = str(llm_signal_result.get("signal_type") or "") if use_llm_signal else ""
+    if use_llm_signal and resolved_llm_signal_type:
+        mapped_intent = _intent_from_signal_classifier(signal_type=resolved_llm_signal_type, current_intent=intent or fallback_intent)
+        if mapped_intent and mapped_intent != intent:
+            intent = mapped_intent
+            intent_confidence = max(intent_confidence, llm_signal_confidence)
     if fallback_intent == "small_talk" and intent != "small_talk":
         intent = "small_talk"
         intent_confidence = fallback_intent_confidence
@@ -2279,6 +2410,10 @@ async def _process_message_result_locked(
             llm_state_result["signal_type"] = "small_talk"
             llm_state_result["signal_emotion"] = "positive"
             llm_state_result["signal_preserves_deal"] = True
+        if isinstance(llm_signal_result, dict):
+            llm_signal_result["signal_type"] = "small_talk"
+            llm_signal_result["signal_emotion"] = "positive"
+            llm_signal_result["signal_preserves_deal"] = True
     if not intent:
         intent = fallback_intent
         intent_confidence = fallback_intent_confidence
@@ -2320,10 +2455,10 @@ async def _process_message_result_locked(
             behavior_confidence=behavior_confidence,
             intent=intent,
             intent_confidence=intent_confidence,
-            signal_type=llm_state_result.get("signal_type") if use_llm_state else None,
-            signal_confidence=llm_confidence if use_llm_state and llm_state_result.get("signal_type") else None,
-            signal_preserves_deal=llm_state_result.get("signal_preserves_deal") if use_llm_state else None,
-            signal_emotion=llm_state_result.get("signal_emotion") if use_llm_state else None,
+            signal_type=(llm_signal_result.get("signal_type") if use_llm_signal else llm_state_result.get("signal_type") if use_llm_state else None),
+            signal_confidence=(llm_signal_confidence if use_llm_signal and llm_signal_result.get("signal_type") else llm_confidence if use_llm_state and llm_state_result.get("signal_type") else None),
+            signal_preserves_deal=(llm_signal_result.get("signal_preserves_deal") if use_llm_signal else llm_state_result.get("signal_preserves_deal") if use_llm_state else None),
+            signal_emotion=(llm_signal_result.get("signal_emotion") if use_llm_signal else llm_state_result.get("signal_emotion") if use_llm_state else None),
         )
     )
     reconcile_contexts_after_state_update(

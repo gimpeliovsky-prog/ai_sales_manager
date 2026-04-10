@@ -91,6 +91,43 @@ def _clean_text(value: Any) -> str | None:
     return text or None
 
 
+def parse_llm_signal_classification(text: str) -> dict[str, Any]:
+    cleaned = str(text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {"valid": False, "reason": "invalid_json"}
+    if not isinstance(payload, dict):
+        return {"valid": False, "reason": "invalid_payload"}
+
+    signal_type = str(payload.get("signal_type") or "").strip()
+    signal_emotion = str(payload.get("signal_emotion") or "").strip()
+    preserves_deal = payload.get("signal_preserves_deal")
+    try:
+        confidence = float(payload.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    if signal_type not in ALLOWED_SIGNAL_TYPES:
+        signal_type = ""
+    if signal_emotion not in ALLOWED_SIGNAL_EMOTIONS:
+        signal_emotion = ""
+    preserves_deal = bool(preserves_deal) if isinstance(preserves_deal, bool) else None
+
+    return {
+        "valid": bool(signal_type),
+        "signal_type": signal_type or None,
+        "signal_emotion": signal_emotion or None,
+        "signal_preserves_deal": preserves_deal,
+        "confidence": max(0.0, min(1.0, confidence)),
+        "reason": _clean_text(payload.get("reason")),
+        "source": "llm",
+    }
+
+
 def parse_llm_state_update(text: str) -> dict[str, Any]:
     cleaned = str(text or "").strip()
     if cleaned.startswith("```"):
