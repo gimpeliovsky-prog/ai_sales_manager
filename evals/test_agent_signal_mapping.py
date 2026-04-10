@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from app.conversation_flow import behavior_from_signal_classifier, intent_from_signal_classifier
+from app.conversation_flow import (
+    behavior_from_signal_classifier,
+    fallback_intent_can_override_llm,
+    intent_from_signal_classifier,
+    llm_signal_soft_override_types,
+)
 
 
 class AgentSignalMappingTests(unittest.TestCase):
@@ -53,6 +58,18 @@ class AgentSignalMappingTests(unittest.TestCase):
             ),
             "confirm_order",
         )
+
+    def test_service_and_handoff_signals_are_soft_override_types(self) -> None:
+        soft_override_types = llm_signal_soft_override_types()
+        self.assertIn("service_request", soft_override_types)
+        self.assertIn("delivery_question", soft_override_types)
+        self.assertIn("handoff_request", soft_override_types)
+
+    def test_only_hard_commercial_fallback_intents_can_override_llm(self) -> None:
+        self.assertTrue(fallback_intent_can_override_llm("find_product"))
+        self.assertTrue(fallback_intent_can_override_llm("confirm_order"))
+        self.assertFalse(fallback_intent_can_override_llm("service_request"))
+        self.assertFalse(fallback_intent_can_override_llm("human_handoff"))
 
 
 if __name__ == "__main__":

@@ -564,6 +564,30 @@ def _behavior_from_intent(*, intent: str, customer_identified: bool) -> str | No
     return None
 
 
+def llm_signal_soft_override_types() -> set[str]:
+    return {
+        "small_talk",
+        "price_objection",
+        "discount_request",
+        "analogs_request",
+        "comparison_request",
+        "delivery_question",
+        "availability_question",
+        "topic_shift",
+        "frustration",
+        "confirmation",
+        "service_request",
+        "stalling",
+        "resume_previous_context",
+        "low_signal",
+        "handoff_request",
+    }
+
+
+def fallback_intent_can_override_llm(fallback_intent: str) -> bool:
+    return fallback_intent in {"find_product", "browse_catalog", "confirm_order", "add_to_order"}
+
+
 def behavior_from_signal_classifier(
     *,
     signal_type: str,

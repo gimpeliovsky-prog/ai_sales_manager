@@ -24,8 +24,10 @@ from app.conversation_flow import (
     classify_behavior,
     classify_intent,
     derive_conversation_state,
+    fallback_intent_can_override_llm,
     get_handoff_message,
     intent_from_signal_classifier,
+    llm_signal_soft_override_types,
 )
 from app.conversation_boundary import is_short_greeting_message
 from app.conversation_contexts import (
@@ -2356,19 +2358,20 @@ async def _process_message_result_locked(
     llm_signal_is_valid = isinstance(llm_signal_result, dict) and llm_signal_result.get("valid")
     llm_signal_confidence = float(llm_signal_result.get("confidence") or 0) if llm_signal_is_valid else 0.0
     llm_signal_type_only = str(llm_signal_result.get("signal_type") or "") if llm_signal_is_valid else ""
+    soft_override_signal_types = llm_signal_soft_override_types()
     use_llm_signal = (
         llm_signal_is_valid
         and (
             llm_signal_confidence >= _signal_classifier_min_confidence(tenant)
-            or (llm_signal_type_only in {"small_talk", "price_objection", "service_request", "topic_shift", "resume_previous_context"} and llm_signal_confidence >= 0.45)
+            or (llm_signal_type_only in soft_override_signal_types and llm_signal_confidence >= 0.45)
         )
     )
     use_llm_state = (
         llm_is_valid
         and (
             llm_confidence >= _state_updater_min_confidence(tenant)
-            or (llm_intent == "small_talk" and llm_confidence >= 0.45)
-            or (llm_signal_type in {"small_talk", "price_objection", "topic_shift"} and llm_confidence >= 0.45)
+            or (llm_intent in {"small_talk", "service_request", "human_handoff", "low_signal"} and llm_confidence >= 0.45)
+            or (llm_signal_type in soft_override_signal_types and llm_confidence >= 0.45)
         )
     )
     if use_llm_state:
@@ -2429,7 +2432,7 @@ async def _process_message_result_locked(
         and fallback_intent != intent
         and fallback_intent_confidence >= 0.9
         and intent_confidence < 0.8
-        and fallback_intent in {"find_product", "browse_catalog", "confirm_order", "add_to_order", "service_request", "human_handoff"}
+        and fallback_intent_can_override_llm(fallback_intent)
     ):
         intent = fallback_intent
         intent_confidence = fallback_intent_confidence
