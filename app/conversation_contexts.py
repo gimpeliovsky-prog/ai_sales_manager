@@ -7,7 +7,15 @@ from typing import Any
 from app.lead_management import normalize_lead_profile
 
 DEFAULT_CONTEXT_TYPE = "new_purchase"
+CONTEXT_TYPES = {
+    "new_purchase",
+    "order_edit",
+    "quote_negotiation",
+    "service_request",
+    "identity_resolution",
+}
 OPEN_CONTEXT_STATUSES = {"open", "waiting_customer", "waiting_internal", "ready_to_execute"}
+_MAX_CONTEXT_EVENTS = 200
 _ORDER_EDIT_FIELDS = {
     "order_correction_status",
     "target_order_id",
@@ -121,6 +129,11 @@ def _context_map(session: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _context_events(session: dict[str, Any]) -> list[dict[str, Any]]:
+    value = session.get("context_events")
+    return value if isinstance(value, list) else []
+
+
 def _require_active_context(session: dict[str, Any]) -> dict[str, Any]:
     contexts = _context_map(session)
     active_context_id = _active_context_id(session)
@@ -131,6 +144,8 @@ def _require_active_context(session: dict[str, Any]) -> dict[str, Any]:
 
 
 def _bootstrap_contexts_from_legacy(session: dict[str, Any]) -> None:
+    if not isinstance(session.get("context_events"), list):
+        session["context_events"] = []
     contexts = _context_map(session)
     active_context_id = _active_context_id(session)
     active_context = contexts.get(active_context_id) if active_context_id else None
@@ -170,7 +185,7 @@ def empty_context(
     created_at = _now_iso()
     return {
         "context_id": f"ctx_{uuid.uuid4().hex[:16]}",
-        "context_type": str(context_type or DEFAULT_CONTEXT_TYPE).strip() or DEFAULT_CONTEXT_TYPE,
+        "context_type": str(context_type or DEFAULT_CONTEXT_TYPE).strip() if str(context_type or DEFAULT_CONTEXT_TYPE).strip() in CONTEXT_TYPES else DEFAULT_CONTEXT_TYPE,
         "status": "open",
         "title": str(title or "").strip() or None,
         "priority": "normal",
@@ -212,10 +227,38 @@ def _product_interest(profile: dict[str, Any]) -> str | None:
 def _context_title(context_type: str, profile: dict[str, Any], related_order_id: str | None) -> str | None:
     if context_type == "order_edit":
         return f"Edit {related_order_id}" if related_order_id else "Order edit"
+    if context_type == "quote_negotiation":
+        interest = _product_interest(profile)
+        return f"Quote: {interest}" if interest else "Quote negotiation"
+    if context_type == "service_request":
+        return f"Service for {related_order_id}" if related_order_id else "Service request"
+    if context_type == "identity_resolution":
+        return "Buyer identification"
     interest = _product_interest(profile)
     if interest:
         return f"Purchase: {interest}"
     return "Purchase"
+
+
+def _append_context_event(
+    session: dict[str, Any],
+    *,
+    event_type: str,
+    context_id: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    _bootstrap_contexts_from_legacy(session)
+    event = {
+        "event_id": f"ctxevt_{uuid.uuid4().hex[:12]}",
+        "event_type": str(event_type or "").strip() or "context_updated",
+        "context_id": str(context_id or "").strip() or None,
+        "active_context_id": _active_context_id(session),
+        "created_at": _now_iso(),
+        "payload": payload if isinstance(payload, dict) else {},
+    }
+    events = _context_events(session)
+    events.append(event)
+    session["context_events"] = events[-_MAX_CONTEXT_EVENTS:]
 
 
 def _dict_subset(profile: dict[str, Any], keys: set[str]) -> dict[str, Any]:
@@ -351,6 +394,28 @@ def active_context(session: dict[str, Any]) -> dict[str, Any]:
     return _require_active_context(session)
 
 
+def active_lead_profile(session: dict[str, Any]) -> dict[str, Any]:
+    context = active_context(session)
+    return normalize_lead_profile(context.get("lead_profile"))
+
+
+def active_context_type(session: dict[str, Any]) -> str:
+    context = active_context(session)
+    value = str(context.get("context_type") or DEFAULT_CONTEXT_TYPE).strip()
+    return value if value in CONTEXT_TYPES else DEFAULT_CONTEXT_TYPE
+
+
+def active_related_order_id(session: dict[str, Any]) -> str | None:
+    context = active_context(session)
+    value = str(context.get("related_order_id") or "").strip()
+    return value or None
+
+
+def context_events(session: dict[str, Any]) -> list[dict[str, Any]]:
+    _bootstrap_contexts_from_legacy(session)
+    return list(_context_events(session))
+
+
 def active_deal_state(session: dict[str, Any]) -> dict[str, Any]:
     context = active_context(session)
     value = context.get("deal_state")
@@ -455,8 +520,24 @@ def create_context(
         lead_profile=lead_profile if isinstance(lead_profile, dict) else context.get("lead_profile"),
     )
     session["contexts"][context["context_id"]] = context
+    _append_context_event(
+        session,
+        event_type="context_created",
+        context_id=context["context_id"],
+        payload={
+            "context_type": context.get("context_type"),
+            "related_order_id": context.get("related_order_id"),
+            "title": context.get("title"),
+        },
+    )
     if activate:
         session["active_context_id"] = context["context_id"]
+        _append_context_event(
+            session,
+            event_type="context_activated",
+            context_id=context["context_id"],
+            payload={"reason": "create_context"},
+        )
     sync_legacy_from_active_context(session)
     return context
 
@@ -464,11 +545,73 @@ def create_context(
 def set_active_context(session: dict[str, Any], context_id: str) -> dict[str, Any]:
     ensure_session_contexts(session)
     if context_id in session["contexts"]:
+        previous_context_id = session.get("active_context_id")
         session["active_context_id"] = context_id
+        if previous_context_id != context_id:
+            _append_context_event(
+                session,
+                event_type="context_switched",
+                context_id=context_id,
+                payload={"previous_context_id": previous_context_id},
+            )
     return sync_legacy_from_active_context(session)
 
 
-def reconcile_contexts_after_state_update(
+def _select_context(
+    session: dict[str, Any],
+    *,
+    context_type: str,
+    reason: str,
+    lead_profile: dict[str, Any],
+    related_order_id: str | None = None,
+    product_interest: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    context_id, context = _find_context(
+        session,
+        context_type=context_type,
+        related_order_id=related_order_id,
+        product_interest=product_interest,
+    )
+    if context is None:
+        context = empty_context(
+            context_type=context_type,
+            related_order_id=related_order_id,
+            lead_profile=lead_profile,
+        )
+        session["contexts"][context["context_id"]] = context
+        context_id = context["context_id"]
+        _append_context_event(
+            session,
+            event_type="context_created",
+            context_id=context_id,
+            payload={
+                "context_type": context_type,
+                "reason": reason,
+                "related_order_id": related_order_id,
+                "product_interest": product_interest,
+            },
+        )
+    return context_id, context
+
+
+def _activate_context_for_reason(
+    session: dict[str, Any],
+    *,
+    context_id: str,
+    reason: str,
+) -> None:
+    previous_context_id = session.get("active_context_id")
+    session["active_context_id"] = context_id
+    if previous_context_id != context_id:
+        _append_context_event(
+            session,
+            event_type="context_switched",
+            context_id=context_id,
+            payload={"previous_context_id": previous_context_id, "reason": reason},
+        )
+
+
+def route_active_context(
     session: dict[str, Any],
     *,
     previous_lead_profile: dict[str, Any] | None,
@@ -478,55 +621,96 @@ def reconcile_contexts_after_state_update(
     current_context = _require_active_context(session)
     current_profile = normalize_lead_profile(session.get("lead_profile"))
     previous_profile = normalize_lead_profile(previous_lead_profile)
+    signal_type = str(session.get("signal_type") or "").strip()
     current_intent = str(session.get("last_intent") or "").strip()
-    current_signal_type = str(session.get("signal_type") or "").strip()
     current_context_type = str(current_context.get("context_type") or DEFAULT_CONTEXT_TYPE).strip() or DEFAULT_CONTEXT_TYPE
-
-    if str(current_profile.get("order_correction_status") or "").strip() == "requested" and not bool(current_profile.get("separate_order_requested")):
-        target_order_id = str(current_profile.get("target_order_id") or active_order_name or "").strip() or None
-        if current_context_type != "order_edit" or not _same_text(current_context.get("related_order_id"), target_order_id):
-            context_id, context = _find_context(session, context_type="order_edit", related_order_id=target_order_id)
-            if context is None:
-                context = empty_context(context_type="order_edit", related_order_id=target_order_id, lead_profile=current_profile)
-                session["contexts"][context["context_id"]] = context
-                context_id = context["context_id"]
-            _copy_session_state_into_context(session, context, lead_profile=current_profile)
-            session["active_context_id"] = context_id
-            return sync_legacy_from_active_context(session)
-        _copy_session_state_into_context(session, current_context, lead_profile=current_profile)
-        return sync_legacy_from_active_context(session)
-
-    previous_interest = _product_interest(previous_profile)
+    target_order_id = str(current_profile.get("target_order_id") or active_order_name or "").strip() or None
     current_interest = _product_interest(current_profile)
-    should_open_new_purchase = bool(
+    previous_interest = _product_interest(previous_profile)
+
+    desired_context_type = current_context_type
+    desired_related_order_id = current_context.get("related_order_id")
+    desired_product_interest = current_interest
+    reason = "state_refresh"
+
+    if not bool(session.get("erp_customer_id")) and (
+        str(session.get("stage") or "").strip() == "identify"
+        or bool(session.get("buyer_company_pending"))
+        or bool(session.get("buyer_review_required"))
+    ):
+        desired_context_type = "identity_resolution"
+        desired_related_order_id = None
+        desired_product_interest = None
+        reason = "identity_resolution"
+    elif signal_type == "service_request" or str(session.get("stage") or "").strip() == "service":
+        desired_context_type = "service_request"
+        desired_related_order_id = target_order_id or current_context.get("related_order_id")
+        reason = "service_request"
+    elif str(current_profile.get("order_correction_status") or "").strip() == "requested" and not bool(current_profile.get("separate_order_requested")):
+        desired_context_type = "order_edit"
+        desired_related_order_id = target_order_id
+        desired_product_interest = current_interest or previous_interest
+        reason = "order_correction"
+    elif signal_type in {"price_objection", "discount_request", "comparison_request", "analogs_request"} or str(current_profile.get("next_action") or "").strip() == "quote_or_clarify_price":
+        desired_context_type = "quote_negotiation"
+        desired_related_order_id = target_order_id if current_context_type == "order_edit" else None
+        reason = "quote_negotiation"
+    elif signal_type in {"delivery_question", "availability_question"} and current_context_type in {"order_edit", "service_request"}:
+        desired_context_type = "service_request"
+        desired_related_order_id = target_order_id or current_context.get("related_order_id")
+        reason = "operational_question"
+    elif signal_type == "resume_previous_context":
+        open_contexts = [
+            (context_id, candidate)
+            for context_id, candidate in session["contexts"].items()
+            if isinstance(candidate, dict) and context_id != session.get("active_context_id") and str(candidate.get("status") or "open").strip() in OPEN_CONTEXT_STATUSES
+        ]
+        if open_contexts:
+            open_contexts.sort(key=lambda pair: str(pair[1].get("updated_at") or ""), reverse=True)
+            desired_context_id, desired_context = open_contexts[0]
+            _activate_context_for_reason(session, context_id=desired_context_id, reason="resume_previous_context")
+            _copy_session_state_into_context(session, desired_context, lead_profile=current_profile)
+            return sync_legacy_from_active_context(session)
+    elif signal_type == "topic_shift" or bool(current_profile.get("separate_order_requested")):
+        desired_context_type = "new_purchase"
+        desired_related_order_id = None
+        reason = "topic_shift"
+    elif (
         current_context_type == "order_edit"
-        and (
-            current_signal_type == "topic_shift"
-            or (
-                current_interest
-                and current_intent in {"find_product", "browse_catalog"}
-                and not bool(current_profile.get("order_correction_status") == "requested")
-                and not _same_text(previous_interest, current_interest)
-            )
-        )
+        and current_interest
+        and current_intent in {"find_product", "browse_catalog"}
+        and not bool(current_profile.get("order_correction_status") == "requested")
+        and not _same_text(previous_interest, current_interest)
+    ):
+        desired_context_type = "new_purchase"
+        desired_related_order_id = None
+        reason = "new_purchase_from_order_edit"
+
+    if desired_context_type == "new_purchase":
+        current_profile = _new_purchase_profile_from(current_profile)
+        session["lead_profile"] = current_profile
+
+    context_id, context = _select_context(
+        session,
+        context_type=desired_context_type,
+        reason=reason,
+        lead_profile=current_profile,
+        related_order_id=desired_related_order_id,
+        product_interest=desired_product_interest if desired_context_type in {"new_purchase", "quote_negotiation"} else None,
     )
-    if bool(current_profile.get("separate_order_requested")):
-        should_open_new_purchase = True
-
-    if should_open_new_purchase:
-        purchase_profile = _new_purchase_profile_from(current_profile)
-        context_id, context = _find_context(
-            session,
-            context_type="new_purchase",
-            product_interest=_product_interest(purchase_profile),
-        )
-        if context is None:
-            context = empty_context(context_type="new_purchase", lead_profile=purchase_profile)
-            session["contexts"][context["context_id"]] = context
-            context_id = context["context_id"]
-        _copy_session_state_into_context(session, context, lead_profile=purchase_profile)
-        session["active_context_id"] = context_id
-        return sync_legacy_from_active_context(session)
-
-    _copy_session_state_into_context(session, current_context, lead_profile=current_profile)
+    _activate_context_for_reason(session, context_id=context_id, reason=reason)
+    _copy_session_state_into_context(session, context, lead_profile=current_profile)
     return sync_legacy_from_active_context(session)
+
+
+def reconcile_contexts_after_state_update(
+    session: dict[str, Any],
+    *,
+    previous_lead_profile: dict[str, Any] | None,
+    active_order_name: str | None,
+) -> dict[str, Any]:
+    return route_active_context(
+        session,
+        previous_lead_profile=previous_lead_profile,
+        active_order_name=active_order_name,
+    )

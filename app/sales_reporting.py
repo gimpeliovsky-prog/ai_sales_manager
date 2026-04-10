@@ -4,6 +4,15 @@ from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
 
+from app.conversation_contexts import (
+    active_context,
+    active_context_type,
+    active_deal_state,
+    active_progress_state,
+    active_related_order_id,
+    active_signal_state,
+    context_events,
+)
 from app.lead_management import normalize_lead_profile
 
 
@@ -57,6 +66,11 @@ def _float(value: Any) -> float:
 
 def lead_snapshot(*, channel: str, uid: str, session: dict[str, Any]) -> dict[str, Any]:
     profile = normalize_lead_profile(session.get("lead_profile"))
+    active_ctx = active_context(session)
+    deal_state = active_deal_state(session)
+    progress_state = active_progress_state(session)
+    signal_state = active_signal_state(session)
+    event_log = context_events(session)
     return {
         "session_id": f"{channel}:{uid}",
         "channel": channel,
@@ -122,20 +136,20 @@ def lead_snapshot(*, channel: str, uid: str, session: dict[str, Any]) -> dict[st
         "source_referrer": profile.get("source_referrer"),
         "source_landing_page": profile.get("source_landing_page"),
         "source_product_page": profile.get("source_product_page"),
-        "product_interest": profile.get("product_interest"),
+        "product_interest": deal_state.get("product_interest") or profile.get("product_interest"),
         "need": profile.get("need"),
-        "quantity": profile.get("quantity"),
-        "uom": profile.get("uom"),
-        "requested_items": profile.get("requested_items") if isinstance(profile.get("requested_items"), list) else [],
-        "requested_item_count": profile.get("requested_item_count"),
-        "requested_items_have_quantities": profile.get("requested_items_have_quantities"),
-        "requested_items_need_uom_confirmation": profile.get("requested_items_need_uom_confirmation"),
-        "requested_items_assumed_uom": profile.get("requested_items_assumed_uom"),
-        "requested_items_uom_assumption_status": profile.get("requested_items_uom_assumption_status"),
-        "urgency": profile.get("urgency"),
-        "delivery_need": profile.get("delivery_need"),
-        "price_sensitivity": profile.get("price_sensitivity"),
-        "decision_status": profile.get("decision_status"),
+        "quantity": deal_state.get("quantity") if deal_state.get("quantity") is not None else profile.get("quantity"),
+        "uom": deal_state.get("uom") or profile.get("uom"),
+        "requested_items": deal_state.get("requested_items") if isinstance(deal_state.get("requested_items"), list) else (profile.get("requested_items") if isinstance(profile.get("requested_items"), list) else []),
+        "requested_item_count": deal_state.get("requested_item_count") if deal_state.get("requested_item_count") is not None else profile.get("requested_item_count"),
+        "requested_items_have_quantities": deal_state.get("requested_items_have_quantities") if deal_state.get("requested_items_have_quantities") is not None else profile.get("requested_items_have_quantities"),
+        "requested_items_need_uom_confirmation": deal_state.get("requested_items_need_uom_confirmation") if deal_state.get("requested_items_need_uom_confirmation") is not None else profile.get("requested_items_need_uom_confirmation"),
+        "requested_items_assumed_uom": deal_state.get("requested_items_assumed_uom") or profile.get("requested_items_assumed_uom"),
+        "requested_items_uom_assumption_status": deal_state.get("requested_items_uom_assumption_status") or profile.get("requested_items_uom_assumption_status"),
+        "urgency": deal_state.get("urgency") or profile.get("urgency"),
+        "delivery_need": deal_state.get("delivery_need") or profile.get("delivery_need"),
+        "price_sensitivity": deal_state.get("price_sensitivity") if deal_state.get("price_sensitivity") is not None else profile.get("price_sensitivity"),
+        "decision_status": deal_state.get("decision_status") or profile.get("decision_status"),
         "duplicate_of_lead_id": profile.get("duplicate_of_lead_id"),
         "dedupe_reason": profile.get("dedupe_reason"),
         "dedupe_score": profile.get("dedupe_score"),
@@ -145,7 +159,7 @@ def lead_snapshot(*, channel: str, uid: str, session: dict[str, Any]) -> dict[st
         "merged_at": profile.get("merged_at"),
         "merged_by": profile.get("merged_by"),
         "order_correction_status": profile.get("order_correction_status"),
-        "target_order_id": profile.get("target_order_id"),
+        "target_order_id": active_related_order_id(session) or profile.get("target_order_id"),
         "correction_type": profile.get("correction_type"),
         "correction_requested_at": profile.get("correction_requested_at"),
         "correction_confirmed_at": profile.get("correction_confirmed_at"),
@@ -156,10 +170,16 @@ def lead_snapshot(*, channel: str, uid: str, session: dict[str, Any]) -> dict[st
         "buyer_phone": session.get("buyer_phone"),
         "buyer_identity_id": session.get("buyer_identity_id"),
         "erp_customer_id": session.get("erp_customer_id"),
-        "active_order_name": session.get("last_sales_order_name"),
-        "stage": session.get("stage"),
-        "behavior_class": session.get("behavior_class"),
-        "intent": session.get("last_intent"),
+        "active_order_name": active_related_order_id(session) or session.get("last_sales_order_name"),
+        "stage": progress_state.get("stage") or session.get("stage"),
+        "behavior_class": progress_state.get("behavior_class") or session.get("behavior_class"),
+        "intent": signal_state.get("intent") or session.get("last_intent"),
+        "active_context_id": active_ctx.get("context_id"),
+        "active_context_type": active_context_type(session),
+        "active_context_title": active_ctx.get("title"),
+        "signal_type": signal_state.get("type") or session.get("signal_type"),
+        "signal_emotion": signal_state.get("emotion") or session.get("signal_emotion"),
+        "context_event_count": len(event_log),
         "last_interaction_at": session.get("last_interaction_at"),
         "last_message_preview": _message_preview(session),
         "conversation_quality_score": session.get("conversation_quality_score"),
@@ -566,6 +586,8 @@ def dashboard_contract() -> dict[str, Any]:
             "next_action",
             "followup_strategy",
             "sales_owner_status",
+            "active_context_type",
+            "signal_type",
             "quote_status",
             "order_correction_status",
             "duplicate_of_lead_id",

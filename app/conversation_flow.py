@@ -25,10 +25,17 @@ SIGNAL_TYPES = {
     "deal_progress",
     "small_talk",
     "price_objection",
+    "discount_request",
+    "analogs_request",
+    "comparison_request",
+    "delivery_question",
+    "availability_question",
     "topic_shift",
     "frustration",
     "confirmation",
     "service_request",
+    "stalling",
+    "resume_previous_context",
     "low_signal",
     "handoff_request",
 }
@@ -283,7 +290,7 @@ def _derive_stage_from_state(
         return "new", 0.86
     if signal_type == "service_request" or status == "service" or intent == "service_request":
         return "service", 0.95
-    if signal_type in {"price_objection", "frustration"} and previous_stage in STAGE_PROMPTS:
+    if signal_type in {"price_objection", "discount_request", "analogs_request", "comparison_request", "delivery_question", "availability_question", "frustration", "stalling", "resume_previous_context"} and previous_stage in STAGE_PROMPTS:
         return previous_stage, 0.87
     if signal_type == "topic_shift":
         return "discover", 0.91
@@ -563,6 +570,8 @@ def classify_signal(
         return "price_objection", 0.8, True, "skeptical"
     if intent == "confirm_order":
         return "confirmation", 0.9, True, _signal_emotion(behavior_class)
+    if active_order_name and intent == "order_detail" and "?" in normalized:
+        return "availability_question", 0.72, True, _signal_emotion(behavior_class)
     if _changed_product_topic(
         session=session,
         current_profile=current_profile,

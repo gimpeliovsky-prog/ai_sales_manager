@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.conversation_contexts import (
+    active_context_type,
+    active_deal_state,
+    active_lead_profile,
+    active_progress_state,
+    active_related_order_id,
+    active_signal_state,
+)
 from app.interaction_patterns import has_explicit_confirmation
 from app.sales_policy import minimum_order_violation, sales_policy
 
@@ -56,12 +64,22 @@ def evaluate_tool_call(
     stage = str(session.get("stage") or "")
     last_intent = str(session.get("last_intent") or "")
     has_customer = bool(session.get("erp_customer_id"))
-    active_order_name = str(session.get("last_sales_order_name") or "").strip()
+    context_type = active_context_type(session)
+    deal_state = active_deal_state(session)
+    progress_state = active_progress_state(session)
+    signal_state = active_signal_state(session)
+    lead_profile = active_lead_profile(session)
+    active_order_name = str(active_related_order_id(session) or session.get("last_sales_order_name") or "").strip()
     requested_order_name = str(inputs.get("sales_order_name") or "").strip()
     has_items = isinstance(inputs.get("items"), list) and bool(inputs.get("items"))
-    lead_profile = session.get("lead_profile") if isinstance(session.get("lead_profile"), dict) else {}
     needs_multi_item_uom_confirmation = bool(lead_profile.get("requested_items_need_uom_confirmation"))
     separate_order_requested = bool(lead_profile.get("separate_order_requested"))
+    quote_status = str(progress_state.get("quote_status") or lead_profile.get("quote_status") or "").strip()
+    signal_type = str(signal_state.get("type") or session.get("signal_type") or "").strip()
+    if progress_state.get("stage"):
+        stage = str(progress_state.get("stage") or "").strip()
+    if signal_state.get("intent"):
+        last_intent = str(signal_state.get("intent") or "").strip()
 
     if tool_name == "get_product_catalog":
         return None
@@ -109,7 +127,7 @@ def evaluate_tool_call(
                 "Cannot create a sales order before the buyer is identified.",
                 "Identify or register the buyer first.",
             )
-        if stage not in {"order_build", "confirm"} and not (separate_order_requested and stage in {"invoice", "service", "closed"}):
+        if stage not in {"order_build", "confirm"} and context_type not in {"new_purchase", "quote_negotiation"} and not (separate_order_requested and stage in {"invoice", "service", "closed"}):
             return _deny(
                 tool_name,
                 f"Sales order creation is not allowed from stage '{stage or 'unknown'}'.",
@@ -168,7 +186,7 @@ def evaluate_tool_call(
                 "There is no active sales order to update.",
                 "Create an order first or ask which order should be updated.",
             )
-        if stage in {"identify", "handoff"}:
+        if stage in {"identify", "handoff"} or context_type == "identity_resolution":
             return _deny(
                 tool_name,
                 f"Sales order update is blocked during stage '{stage}'.",
@@ -202,7 +220,7 @@ def evaluate_tool_call(
                 "Cannot create an invoice without a sales order.",
                 "Create or locate the sales order first.",
             )
-        if stage not in {"invoice", "service", "closed"}:
+        if stage not in {"invoice", "service", "closed"} and context_type not in {"service_request", "quote_negotiation"}:
             return _deny(
                 tool_name,
                 f"Invoice creation is not allowed from stage '{stage or 'unknown'}'.",
@@ -220,7 +238,7 @@ def evaluate_tool_call(
         return None
 
     if tool_name in {"create_license", "extend_subscription"}:
-        if stage not in {"service", "closed"} and last_intent != "service_request":
+        if stage not in {"service", "closed"} and context_type != "service_request" and signal_type != "service_request" and last_intent != "service_request":
             return _deny(
                 tool_name,
                 f"Tool '{tool_name}' is reserved for service flows.",

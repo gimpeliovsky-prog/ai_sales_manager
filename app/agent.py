@@ -26,7 +26,12 @@ from app.conversation_flow import (
     get_handoff_message,
 )
 from app.conversation_boundary import is_short_greeting_message
-from app.conversation_contexts import reconcile_contexts_after_state_update
+from app.conversation_contexts import (
+    active_lead_profile,
+    active_related_order_id,
+    active_signal_state,
+    reconcile_contexts_after_state_update,
+)
 from app.config import get_settings
 from app.i18n import text as i18n_text
 from app.interaction_patterns import has_explicit_confirmation
@@ -1628,7 +1633,7 @@ async def _classify_state_with_llm(
             "Classify the customer's latest message for sales-runtime state update. "
             "Return only compact JSON with keys: intent, signal_type, signal_emotion, signal_preserves_deal, behavior_class, confidence, next_action, lead_patch, reason. "
             "intent must be one of: low_signal, small_talk, find_product, browse_catalog, order_detail, confirm_order, add_to_order, service_request, human_handoff. "
-            "signal_type must be one of: deal_progress, small_talk, price_objection, topic_shift, frustration, confirmation, service_request, low_signal, handoff_request. "
+            "signal_type must be one of: deal_progress, small_talk, price_objection, discount_request, analogs_request, comparison_request, delivery_question, availability_question, topic_shift, frustration, confirmation, service_request, stalling, resume_previous_context, low_signal, handoff_request. "
             "signal_emotion must be one of: neutral, positive, impatient, skeptical. "
             "signal_preserves_deal must be true when the current commercial thread should stay active after handling the message, and false when the customer is explicitly shifting away from it. "
             "behavior_class must be one of: direct_buyer, explorer, unclear_request, price_sensitive, frustrated, service_request, returning_customer, silent_or_low_signal. "
@@ -1638,7 +1643,12 @@ async def _classify_state_with_llm(
             "Use next_action to express the single best next sales step after this message. "
             "Use small_talk for greetings, social check-ins, or politeness in any language when there is no product, service, or order request yet. "
             "Use price_objection for messages such as 'expensive', 'too much', or equivalent objections in any language when the deal should continue after the response. "
+            "Use discount_request when the customer explicitly asks for a discount or better commercial terms. "
+            "Use analogs_request when the customer asks for a cheaper or alternative item while keeping the same need. "
+            "Use comparison_request when the customer asks to compare options, models, or alternatives. "
+            "Use delivery_question or availability_question when the customer asks operational questions about delivery or stock for the current item or order. "
             "Use topic_shift when the customer is moving from the current deal or order-edit thread to another product or a separate order. "
+            "Use resume_previous_context when the customer is clearly returning to an earlier open thread in the same conversation. "
             "Prefer show_matching_options or select_specific_item when the customer named only a broad product and asks what exists. "
             "Do not ask again for quantity or UOM when they are already known in the lead profile unless the customer changes them. "
             "If there is an active order and the customer explicitly asks for a new or separate order, do not treat that as add_to_order. "
@@ -2197,7 +2207,7 @@ async def _process_message_result_locked(
                     message_type="buyer_company_request",
                     payload={"buyer_name": intro_name, "buyer_phone": intro_phone},
                 )
-    active_order_name = session.get("last_sales_order_name")
+    active_order_name = active_related_order_id(session) or session.get("last_sales_order_name")
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None
     previous_lead_profile = normalize_lead_profile(session.get("lead_profile"))
     llm_state_result: dict[str, Any] | None = None
@@ -2435,8 +2445,8 @@ async def _process_message_result_locked(
         result["text"] = reply
         return result
 
-    normalized_runtime_profile = normalize_lead_profile(session.get("lead_profile"))
-    runtime_signal = str(session.get("signal_type") or session.get("last_intent") or "").strip()
+    normalized_runtime_profile = active_lead_profile(session)
+    runtime_signal = str(active_signal_state(session).get("type") or session.get("signal_type") or session.get("last_intent") or "").strip()
     if should_block_for_intro_before_assistance(
         needs_intro=needs_intro,
         customer_identified=bool(session.get("erp_customer_id")),
@@ -2675,10 +2685,10 @@ async def _process_message_result_locked(
                 behavior_class=session.get("behavior_class"),
                 buyer_name=session.get("buyer_name"),
                 erp_customer_id=session.get("erp_customer_id"),
-                last_sales_order_name=session.get("last_sales_order_name"),
+                last_sales_order_name=active_order_name,
                 recent_sales_orders=session.get("recent_sales_orders"),
                 recent_sales_invoices=session.get("recent_sales_invoices"),
-                lead_profile=session.get("lead_profile"),
+                lead_profile=active_lead_profile(session),
                 contexts=session.get("contexts") if isinstance(session.get("contexts"), dict) else None,
                 active_context_id=session.get("active_context_id"),
                 handoff_required=bool(session.get("handoff_required")),
@@ -2831,14 +2841,14 @@ async def _process_message_result_locked(
                             inputs=inputs,
                             company_code=company_code,
                             erp_customer_id=session.get("erp_customer_id"),
-                            active_sales_order_name=session.get("last_sales_order_name"),
+                            active_sales_order_name=active_order_name,
                             current_lang=current_lang,
                             user_text=user_text,
                             channel=channel,
                             channel_uid=channel_uid,
                             lc=lc,
                             ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
-                            lead_profile=session.get("lead_profile") if isinstance(session.get("lead_profile"), dict) else None,
+                            lead_profile=active_lead_profile(session),
                             confirmation_override=confirmation_override,
                         )
                         try:

@@ -4,6 +4,7 @@ from app.conversation_contexts import (
     active_deal_state,
     active_progress_state,
     active_signal_state,
+    context_events,
     create_context,
     ensure_session_contexts,
     reconcile_contexts_after_state_update,
@@ -104,6 +105,7 @@ class ConversationContextsTests(unittest.TestCase):
         self.assertEqual(active["context_type"], "order_edit")
         self.assertEqual(active["related_order_id"], "SO-777")
         self.assertEqual(active["lead_profile"]["order_correction_status"], "requested")
+        self.assertTrue(any(event.get("event_type") == "context_created" for event in context_events(session)))
 
     def test_new_product_from_order_edit_opens_purchase_context(self) -> None:
         session = {
@@ -150,6 +152,61 @@ class ConversationContextsTests(unittest.TestCase):
         self.assertEqual(active["lead_profile"]["product_interest"], "monitor")
         self.assertEqual(active["lead_profile"]["order_correction_status"], "none")
         self.assertEqual(active_signal_state(session)["type"], "topic_shift")
+
+    def test_price_objection_routes_to_quote_negotiation_context(self) -> None:
+        session = {
+            "stage": "discover",
+            "stage_confidence": 0.81,
+            "behavior_class": "price_sensitive",
+            "behavior_confidence": 0.84,
+            "last_intent": "find_product",
+            "last_intent_confidence": 0.72,
+            "signal_type": "price_objection",
+            "signal_confidence": 0.88,
+            "signal_preserves_deal": True,
+            "signal_emotion": "skeptical",
+            "lead_profile": {
+                "status": "qualified",
+                "product_interest": "laptop",
+                "next_action": "quote_or_clarify_price",
+            },
+        }
+        ensure_session_contexts(session)
+        reconcile_contexts_after_state_update(
+            session,
+            previous_lead_profile={"status": "qualified", "product_interest": "laptop"},
+            active_order_name=None,
+        )
+        active = session["contexts"][session["active_context_id"]]
+        self.assertEqual(active["context_type"], "quote_negotiation")
+        self.assertEqual(active_deal_state(session)["product_interest"], "laptop")
+
+    def test_service_request_routes_to_service_context(self) -> None:
+        session = {
+            "stage": "service",
+            "stage_confidence": 0.95,
+            "behavior_class": "service_request",
+            "behavior_confidence": 0.93,
+            "last_intent": "service_request",
+            "last_intent_confidence": 0.94,
+            "signal_type": "service_request",
+            "signal_confidence": 0.95,
+            "signal_preserves_deal": True,
+            "signal_emotion": "neutral",
+            "lead_profile": {
+                "status": "service",
+                "target_order_id": "SO-999",
+            },
+        }
+        ensure_session_contexts(session)
+        reconcile_contexts_after_state_update(
+            session,
+            previous_lead_profile={"status": "order_created", "target_order_id": "SO-999"},
+            active_order_name="SO-999",
+        )
+        active = session["contexts"][session["active_context_id"]]
+        self.assertEqual(active["context_type"], "service_request")
+        self.assertEqual(active["related_order_id"], "SO-999")
 
 
 if __name__ == "__main__":

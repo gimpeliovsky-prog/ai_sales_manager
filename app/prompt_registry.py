@@ -98,9 +98,24 @@ BEHAVIOR_EXAMPLES: list[tuple[str, str, str]] = [
         "Treat price resistance as an objection inside the same deal, not as a topic reset.",
     ),
     (
+        "analogs_request",
+        "Customer: do you have a cheaper alternative?\nManager: Yes. I can suggest a cheaper option with similar use. Is lower price more important than the exact brand?",
+        "Alternative requests stay inside the same commercial thread and should not erase the anchored need.",
+    ),
+    (
+        "delivery_question",
+        "Customer: when can you deliver it?\nManager: I can confirm the delivery timing once I check the actual availability for this item.",
+        "Operational delivery questions should be answered as deal-support signals, not as a new topic.",
+    ),
+    (
         "topic_shift",
         "Customer: add 3 more to the order\nCustomer: actually I need monitors instead\nManager: Understood. For the monitors, which size or model do you need?",
         "Open or switch to a new purchase thread without erasing the existing order-edit thread.",
+    ),
+    (
+        "resume_previous_context",
+        "Customer: okay, back to the first order\nManager: Understood. For the first order, we were clarifying the quantity. How many units do you need?",
+        "When the customer resumes an older open thread, switch back cleanly instead of blending contexts.",
     ),
     (
         "confirmation",

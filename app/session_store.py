@@ -92,6 +92,7 @@ def _empty_session() -> dict[str, Any]:
         "quality_flags": [],
         "coaching_notes": [],
         "quality_evaluated_at": None,
+        "context_events": [],
         "lang": None,
         "stage": "new",
         "stage_confidence": 0.0,
