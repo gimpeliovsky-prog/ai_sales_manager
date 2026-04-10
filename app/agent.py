@@ -20,10 +20,12 @@ from app.buyer_intake import (
 )
 from app.conversation_flow import (
     advance_stage_after_tool,
+    behavior_from_signal_classifier,
     classify_behavior,
     classify_intent,
     derive_conversation_state,
     get_handoff_message,
+    intent_from_signal_classifier,
 )
 from app.conversation_boundary import is_short_greeting_message
 from app.conversation_contexts import (
@@ -1637,22 +1639,6 @@ def _parse_confirmation_classifier_response(text: str) -> dict[str, Any]:
     }
 
 
-def _intent_from_signal_classifier(*, signal_type: str, current_intent: str) -> str:
-    if signal_type == "small_talk":
-        return "small_talk"
-    if signal_type in {"service_request", "delivery_question", "availability_question"}:
-        return "service_request"
-    if signal_type == "handoff_request":
-        return "human_handoff"
-    if signal_type == "confirmation":
-        return "confirm_order"
-    if signal_type in {"low_signal", "frustration"}:
-        return "low_signal"
-    if signal_type in {"topic_shift", "deal_progress"}:
-        return current_intent
-    return current_intent
-
-
 async def _classify_state_with_llm(
     *,
     client: httpx.AsyncClient,
@@ -2395,17 +2381,31 @@ async def _process_message_result_locked(
 
     fallback_behavior_class, fallback_behavior_confidence = classify_behavior(user_text, session, ai_policy=ai_policy)
     fallback_intent, fallback_intent_confidence = classify_intent(user_text, ai_policy=ai_policy)
+    signal_mapped_behavior = (
+        behavior_from_signal_classifier(
+            signal_type=llm_signal_type_only,
+            current_behavior_class=fallback_behavior_class,
+            customer_identified=bool(session.get("erp_customer_id")),
+        )
+        if use_llm_signal and llm_signal_type_only
+        else ""
+    )
+    signal_mapped_intent = (
+        intent_from_signal_classifier(signal_type=llm_signal_type_only, current_intent=fallback_intent)
+        if use_llm_signal and llm_signal_type_only
+        else ""
+    )
     behavior_class = str(llm_state_result.get("behavior_class") or "") if use_llm_state else ""
     intent = str(llm_state_result.get("intent") or "") if use_llm_state else ""
     llm_confidence = float(llm_state_result.get("confidence") or 0) if use_llm_state else 0.0
-    behavior_confidence = llm_confidence if behavior_class else fallback_behavior_confidence
-    intent_confidence = llm_confidence if intent else fallback_intent_confidence
+    behavior_confidence = llm_confidence if behavior_class else (llm_signal_confidence if signal_mapped_behavior else fallback_behavior_confidence)
+    intent_confidence = llm_confidence if intent else (llm_signal_confidence if signal_mapped_intent else fallback_intent_confidence)
     if not behavior_class:
-        behavior_class = fallback_behavior_class
-        behavior_confidence = fallback_behavior_confidence
+        behavior_class = signal_mapped_behavior or fallback_behavior_class
+        behavior_confidence = llm_signal_confidence if signal_mapped_behavior else fallback_behavior_confidence
     resolved_llm_signal_type = str(llm_signal_result.get("signal_type") or "") if use_llm_signal else ""
     if use_llm_signal and resolved_llm_signal_type:
-        mapped_intent = _intent_from_signal_classifier(signal_type=resolved_llm_signal_type, current_intent=intent or fallback_intent)
+        mapped_intent = intent_from_signal_classifier(signal_type=resolved_llm_signal_type, current_intent=intent or signal_mapped_intent or fallback_intent)
         if mapped_intent and mapped_intent != intent:
             intent = mapped_intent
             intent_confidence = max(intent_confidence, llm_signal_confidence)
@@ -2422,8 +2422,8 @@ async def _process_message_result_locked(
             llm_signal_result["signal_emotion"] = "positive"
             llm_signal_result["signal_preserves_deal"] = True
     if not intent:
-        intent = fallback_intent
-        intent_confidence = fallback_intent_confidence
+        intent = signal_mapped_intent or fallback_intent
+        intent_confidence = llm_signal_confidence if signal_mapped_intent else fallback_intent_confidence
     elif (
         fallback_intent
         and fallback_intent != intent

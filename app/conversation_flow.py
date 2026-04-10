@@ -547,6 +547,41 @@ def _signal_emotion(behavior_class: str) -> str:
     return "neutral"
 
 
+def behavior_from_signal_classifier(
+    *,
+    signal_type: str,
+    current_behavior_class: str,
+    customer_identified: bool,
+) -> str:
+    if signal_type == "small_talk":
+        return "returning_customer" if customer_identified else "silent_or_low_signal"
+    if signal_type in {"price_objection", "discount_request", "analogs_request", "comparison_request"}:
+        return "price_sensitive"
+    if signal_type in {"service_request", "delivery_question", "availability_question"}:
+        return "service_request"
+    if signal_type in {"frustration", "handoff_request"}:
+        return "frustrated"
+    if signal_type in {"low_signal", "stalling"}:
+        return "silent_or_low_signal"
+    return current_behavior_class
+
+
+def intent_from_signal_classifier(*, signal_type: str, current_intent: str) -> str:
+    if signal_type == "small_talk":
+        return "small_talk"
+    if signal_type in {"service_request", "delivery_question", "availability_question"}:
+        return "service_request"
+    if signal_type == "handoff_request":
+        return "human_handoff"
+    if signal_type == "confirmation":
+        return "confirm_order"
+    if signal_type in {"low_signal", "frustration"}:
+        return "low_signal"
+    if signal_type in {"topic_shift", "deal_progress"}:
+        return current_intent
+    return current_intent
+
+
 def _changed_product_topic(
     *,
     session: dict[str, Any],
