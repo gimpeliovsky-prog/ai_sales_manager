@@ -26,6 +26,7 @@ from app.conversation_flow import (
     get_handoff_message,
 )
 from app.conversation_boundary import is_short_greeting_message
+from app.conversation_contexts import reconcile_contexts_after_state_update
 from app.config import get_settings
 from app.i18n import text as i18n_text
 from app.interaction_patterns import has_explicit_confirmation
@@ -971,6 +972,8 @@ def _build_system_prompt(
     recent_sales_orders: list[dict[str, Any]] | None = None,
     recent_sales_invoices: list[dict[str, Any]] | None = None,
     lead_profile: dict[str, Any] | None = None,
+    contexts: dict[str, Any] | None = None,
+    active_context_id: str | None = None,
     handoff_required: bool = False,
     handoff_reason: str | None = None,
 ) -> str:
@@ -986,6 +989,8 @@ def _build_system_prompt(
         recent_sales_orders=recent_sales_orders,
         recent_sales_invoices=recent_sales_invoices,
         lead_profile=lead_profile,
+        contexts=contexts,
+        active_context_id=active_context_id,
         handoff_required=handoff_required,
         handoff_reason=handoff_reason,
     )
@@ -2277,6 +2282,11 @@ async def _process_message_result_locked(
             intent_confidence=intent_confidence,
         )
     )
+    reconcile_contexts_after_state_update(
+        session,
+        previous_lead_profile=previous_lead_profile,
+        active_order_name=active_order_name,
+    )
     await _apply_lead_dedupe(
         company_code=company_code,
         channel=channel,
@@ -2646,6 +2656,8 @@ async def _process_message_result_locked(
                 recent_sales_orders=session.get("recent_sales_orders"),
                 recent_sales_invoices=session.get("recent_sales_invoices"),
                 lead_profile=session.get("lead_profile"),
+                contexts=session.get("contexts") if isinstance(session.get("contexts"), dict) else None,
+                active_context_id=session.get("active_context_id"),
                 handoff_required=bool(session.get("handoff_required")),
                 handoff_reason=session.get("handoff_reason"),
             )

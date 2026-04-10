@@ -277,6 +277,48 @@ def _lead_state_guard_lines(lead_profile: dict[str, Any] | None) -> list[str]:
     return lines
 
 
+def _conversation_context_lines(
+    contexts: dict[str, Any] | None,
+    *,
+    active_context_id: str | None,
+) -> list[str]:
+    if not isinstance(contexts, dict) or not contexts:
+        return []
+    lines: list[str] = []
+    active_id = str(active_context_id or "").strip() or None
+    active = contexts.get(active_id) if active_id else None
+    if isinstance(active, dict):
+        active_type = str(active.get("context_type") or "new_purchase").strip()
+        active_title = str(active.get("title") or "").strip()
+        active_order = str(active.get("related_order_id") or "").strip()
+        active_line = f"Active conversation context: {active_type}"
+        if active_title:
+            active_line += f" ({active_title})"
+        if active_order:
+            active_line += f", related order {active_order}"
+        lines.append(active_line)
+    open_summaries: list[str] = []
+    for context_id, context in contexts.items():
+        if not isinstance(context, dict) or context_id == active_id:
+            continue
+        status = str(context.get("status") or "open").strip()
+        if status not in {"open", "waiting_customer", "waiting_internal", "ready_to_execute"}:
+            continue
+        context_type = str(context.get("context_type") or "new_purchase").strip()
+        title = str(context.get("title") or "").strip()
+        related_order = str(context.get("related_order_id") or "").strip()
+        summary = context_type
+        if title:
+            summary += f": {title}"
+        if related_order:
+            summary += f" (order {related_order})"
+        open_summaries.append(summary)
+    if open_summaries:
+        lines.append(f"Other open contexts: {'; '.join(open_summaries[:3])}")
+        lines.append("Do not mix the active context with other open contexts unless the customer clearly switches topics.")
+    return lines
+
+
 def _tenant_context_lines(tenant: dict[str, Any], lang: str) -> list[str]:
     if lang == "auto":
         lines = ["Customer reply language for this turn: auto-detect from the customer's message and reply in that same language."]
@@ -369,6 +411,8 @@ def build_runtime_system_prompt(
     recent_sales_orders: list[dict[str, Any]] | None = None,
     recent_sales_invoices: list[dict[str, Any]] | None = None,
     lead_profile: dict[str, Any] | None = None,
+    contexts: dict[str, Any] | None = None,
+    active_context_id: str | None = None,
     handoff_required: bool = False,
     handoff_reason: str | None = None,
 ) -> str:
@@ -405,6 +449,7 @@ def build_runtime_system_prompt(
         recent_sales_invoices=recent_sales_invoices,
     )
     context_lines.extend(buyer_context)
+    context_lines.extend(_conversation_context_lines(contexts, active_context_id=active_context_id))
     lead_profile_context = _lead_profile_lines(lead_profile, stage=resolved_stage)
     context_lines.extend(lead_profile_context)
     if context_lines:
