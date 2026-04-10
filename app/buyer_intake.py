@@ -68,6 +68,14 @@ _BUYER_COMPANY_LOOKUP_ERROR = {
 }
 
 
+def truncate_inbound_text(text: str | None, *, max_chars: int = 4000) -> str:
+    normalized = str(text or "").replace("\x00", " ").strip()
+    limit = max(1, int(max_chars or 4000))
+    if len(normalized) > limit:
+        normalized = normalized[:limit].rstrip()
+    return normalized
+
+
 def clean_company_candidate(text: str) -> str | None:
     candidate = re.sub(r"\s+", " ", str(text or "")).strip(" ,.;:-")
     if not candidate:

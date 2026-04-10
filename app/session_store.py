@@ -440,13 +440,20 @@ async def session_processing_lock(
     channel: str,
     uid: str,
     *,
-    timeout_seconds: int = 120,
-    blocking_timeout_seconds: int = 15,
+    timeout_seconds: int | None = None,
+    blocking_timeout_seconds: int | None = None,
 ):
+    settings = get_settings()
+    resolved_timeout_seconds = timeout_seconds
+    if resolved_timeout_seconds is None:
+        resolved_timeout_seconds = int(settings.session_lock_timeout_seconds or 180)
+    resolved_blocking_timeout_seconds = blocking_timeout_seconds
+    if resolved_blocking_timeout_seconds is None:
+        resolved_blocking_timeout_seconds = int(settings.session_lock_blocking_timeout_seconds or 45)
     lock = _client().lock(
         _session_lock_key(channel, uid),
-        timeout=max(5, int(timeout_seconds or 120)),
-        blocking_timeout=max(1, int(blocking_timeout_seconds or 15)),
+        timeout=max(5, int(resolved_timeout_seconds or 180)),
+        blocking_timeout=max(1, int(resolved_blocking_timeout_seconds or 45)),
     )
     acquired = await lock.acquire()
     if not acquired:

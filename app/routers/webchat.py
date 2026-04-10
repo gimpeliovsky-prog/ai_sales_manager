@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.agent import process_message
+from app.i18n import text as i18n_text
 from app.license_client import get_license_client
 from app.session_store import clear_session
 
@@ -76,13 +77,17 @@ async def webchat_ws(websocket: WebSocket, company_code: str, session_id: str):
                 await clear_session("webchat", session_id)
                 await websocket.send_text("Диалог сброшен.")
                 continue
-            reply = await process_message(
-                channel="webchat",
-                channel_uid=session_id,
-                user_text=text,
-                tenant=tenant,
-                channel_context=_webchat_source_context(websocket, company_code),
-            )
+            try:
+                reply = await process_message(
+                    channel="webchat",
+                    channel_uid=session_id,
+                    user_text=text,
+                    tenant=tenant,
+                    channel_context=_webchat_source_context(websocket, company_code),
+                )
+            except Exception:
+                logger.exception("Webchat message processing failed")
+                reply = i18n_text("runtime.temporary_error", tenant.get("ai_language", "auto"))
             await websocket.send_text(reply)
     except WebSocketDisconnect:
         logger.info("WebChat [%s] session %s disconnected", company_code, session_id)

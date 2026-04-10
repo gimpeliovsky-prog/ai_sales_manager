@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     ai_agent_token: str
     redis_url: str = "redis://localhost:6379"
     session_ttl_seconds: int = 86400
+    inbound_message_max_chars: int = 4000
+    message_processing_timeout_seconds: int = 45
+    session_lock_timeout_seconds: int = 180
+    session_lock_blocking_timeout_seconds: int = 45
+    openai_runtime_timeout_seconds: int = 45
     dialog_stale_after_hours: int = 4
     public_base_url: str = ""
     lead_followup_worker_enabled: bool = True

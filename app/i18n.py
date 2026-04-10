@@ -29,6 +29,12 @@ DEFAULT_TRANSLATIONS: dict[str, dict[str, str]] = {
         "he": "שלום! איך אפשר לעזור לך היום?",
         "ar": "مرحبا! كيف يمكنني مساعدتك اليوم؟",
     },
+    "runtime.temporary_error": {
+        "en": "I couldn't process that right now because of a temporary error. Please try again.",
+        "ru": "Сейчас не получилось обработать запрос из-за временной ошибки. Попробуйте ещё раз.",
+        "he": "לא הצלחתי לעבד את הבקשה כרגע בגלל שגיאה זמנית. נסה שוב.",
+        "ar": "تعذر عليّ معالجة الطلب الآن بسبب خطأ مؤقت. حاول مرة أخرى.",
+    },
     "order.already_created": {
         "en": "Your order has already been created. The current active order is {order_name}.",
         "ru": "Заказ уже создан. Текущий активный заказ: {order_name}.",

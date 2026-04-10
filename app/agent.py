@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -17,6 +18,7 @@ from app.buyer_intake import (
     clean_company_candidate as _clean_company_candidate_text,
     get_intro_sales_contact_message as _intro_sales_contact_message_text,
     get_known_buyer_greeting as _known_buyer_greeting_text,
+    truncate_inbound_text,
 )
 from app.conversation_flow import (
     advance_stage_after_tool,
@@ -124,6 +126,10 @@ _GENERIC_COMPANY_VALUES = {
     "شركة",
     "الشركة",
 }
+
+
+def _runtime_temporary_error_text(lang: str) -> str:
+    return i18n_text("runtime.temporary_error", lang or "en")
 _KNOWN_BUYER_GREETING = {
     "en": "Hello, {buyer_name}. How can I help?",
     "ru": "Здравствуйте, {buyer_name}. Чем могу помочь?",
@@ -887,6 +893,8 @@ async def _finalize_intake_reply(
     handoff_reason: str | None = None,
     handoff_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if final_reply == "РџСЂРѕРёР·РѕС€Р»Р° РІРЅСѓС‚СЂРµРЅРЅСЏСЏ РѕС€РёР±РєР°, РїРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ.":
+        final_reply = _runtime_temporary_error_text(current_lang)
     session["messages"].append({"role": "user", "content": user_text})
     session["messages"].append({"role": "assistant", "content": reply})
     session["messages"] = session.get("messages", [])[-40:]
@@ -2849,8 +2857,9 @@ async def _process_message_result_locked(
     last_successful_tool_name: str | None = None
     last_successful_tool_result: dict[str, Any] | None = None
     terminal_tool_completed = False
+    tool_loop_failed = False
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=max(5.0, float(settings.openai_runtime_timeout_seconds or 45))) as client:
         for _ in range(max_iter):
             system_prompt = _build_system_prompt(
                 tenant,
@@ -2875,13 +2884,19 @@ async def _process_message_result_locked(
                 system_prompt = system_prompt + "\n\n" + prefetched_order_status_context
             if prefetched_availability_context:
                 system_prompt = system_prompt + "\n\n" + prefetched_availability_context
-            response = await _create_openai_response(
-                client,
-                api_key=settings.openai_api_key,
-                model=settings.openai_model,
-                system_prompt=system_prompt,
-                input_items=input_items,
-            )
+            try:
+                response = await _create_openai_response(
+                    client,
+                    api_key=settings.openai_api_key,
+                    model=settings.openai_model,
+                    system_prompt=system_prompt,
+                    input_items=input_items,
+                )
+            except Exception as exc:
+                logger.warning("Runtime LLM response failed: %s", exc)
+                final_reply = _runtime_temporary_error_text(current_lang)
+                tool_loop_failed = True
+                break
 
             function_calls = _extract_function_calls(response)
             reply_text = _extract_output_text(response)
@@ -3011,25 +3026,35 @@ async def _process_message_result_locked(
                     if policy_result:
                         parsed_result = policy_result
                     else:
-                        result_str = await execute_tool(
-                            name=tool_name,
-                            inputs=inputs,
-                            company_code=company_code,
-                            erp_customer_id=session.get("erp_customer_id"),
-                            active_sales_order_name=active_order_name,
-                            current_lang=current_lang,
-                            user_text=user_text,
-                            channel=channel,
-                            channel_uid=channel_uid,
-                            lc=lc,
-                            ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
-                            lead_profile=active_lead_profile(session),
-                            confirmation_override=confirmation_override,
-                        )
                         try:
-                            parsed_result = json.loads(result_str)
-                        except json.JSONDecodeError:
-                            parsed_result = {"raw_result": result_str}
+                            result_str = await execute_tool(
+                                name=tool_name,
+                                inputs=inputs,
+                                company_code=company_code,
+                                erp_customer_id=session.get("erp_customer_id"),
+                                active_sales_order_name=active_order_name,
+                                current_lang=current_lang,
+                                user_text=user_text,
+                                channel=channel,
+                                channel_uid=channel_uid,
+                                lc=lc,
+                                ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
+                                lead_profile=active_lead_profile(session),
+                                confirmation_override=confirmation_override,
+                            )
+                            try:
+                                parsed_result = json.loads(result_str)
+                            except json.JSONDecodeError:
+                                parsed_result = {"raw_result": result_str}
+                        except Exception as exc:
+                            logger.warning("Tool execution failed for %s: %s", tool_name, exc)
+                            parsed_result = {
+                                "error": "temporary_tool_execution_error",
+                                "error_code": "tool_execution_failed",
+                                "detail": str(exc),
+                            }
+                            result_str = json.dumps(parsed_result, ensure_ascii=False, default=str)
+                            tool_loop_failed = True
                 model_result_payload = _compact_tool_result_for_model(tool_name, parsed_result if isinstance(parsed_result, dict) else {})
                 model_result_str = json.dumps(model_result_payload, ensure_ascii=False, default=str)
 
@@ -3177,8 +3202,11 @@ async def _process_message_result_locked(
                         "output": model_result_str,
                     }
                 )
+                if tool_loop_failed:
+                    final_reply = _runtime_temporary_error_text(current_lang)
+                    break
 
-            if terminal_tool_completed:
+            if terminal_tool_completed or tool_loop_failed:
                 break
             input_items = _trim_input_items(input_items + response.get("output", []) + tool_outputs)
         else:
@@ -3287,14 +3315,20 @@ async def process_message_result(
     tenant: dict,
     channel_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    async with session_processing_lock(channel, channel_uid):
-        return await _process_message_result_locked(
-            channel,
-            channel_uid,
-            user_text,
-            tenant,
-            channel_context=channel_context,
-        )
+    settings = get_settings()
+    sanitized_user_text = truncate_inbound_text(
+        user_text,
+        max_chars=int(settings.inbound_message_max_chars or 4000),
+    )
+    async with asyncio.timeout(max(5, int(settings.message_processing_timeout_seconds or 45))):
+        async with session_processing_lock(channel, channel_uid):
+            return await _process_message_result_locked(
+                channel,
+                channel_uid,
+                sanitized_user_text,
+                tenant,
+                channel_context=channel_context,
+            )
 
 
 async def process_message(

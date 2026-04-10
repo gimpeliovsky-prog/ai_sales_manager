@@ -36,13 +36,17 @@ async def whatsapp_webhook(request: Request):
         await clear_session("whatsapp", from_number)
         reply = i18n_text("welcome.generic", tenant.get("ai_language", "auto"))
     else:
-        reply = await process_message(
-            channel="whatsapp",
-            channel_uid=from_number,
-            user_text=text,
-            tenant=tenant,
-            channel_context={"whatsapp_to_number": to_number, "whatsapp_from_number": from_number},
-        )
+        try:
+            reply = await process_message(
+                channel="whatsapp",
+                channel_uid=from_number,
+                user_text=text,
+                tenant=tenant,
+                channel_context={"whatsapp_to_number": to_number, "whatsapp_from_number": from_number},
+            )
+        except Exception:
+            logger.exception("WhatsApp message processing failed")
+            reply = i18n_text("runtime.temporary_error", tenant.get("ai_language", "auto"))
 
     twiml = MessagingResponse()
     twiml.message(reply)
