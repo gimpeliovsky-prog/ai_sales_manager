@@ -132,6 +132,22 @@ class LicenseClient:
             },
         )
 
+    async def update_buyer_preferred_language(
+        self,
+        company_code: str,
+        buyer_identity_id: str,
+        *,
+        preferred_language: str,
+        source: str | None = None,
+    ) -> dict:
+        return await self._patch(
+            f"/tenants/{company_code}/buyers/{buyer_identity_id}/preferred-language",
+            {
+                "preferred_language": preferred_language,
+                "source": source,
+            },
+        )
+
     async def get_buyer_sales_history(self, company_code: str, erp_customer_id: str) -> dict:
         return await self._get(f"/tenants/{company_code}/buyers/{erp_customer_id}/sales-history")
 

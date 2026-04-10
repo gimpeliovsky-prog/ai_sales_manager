@@ -18,6 +18,7 @@ _PRESERVED_SESSION_KEYS = {
     "buyer_name",
     "buyer_identity_id",
     "buyer_phone",
+    "buyer_preferred_language",
     "buyer_company_name",
     "buyer_company_registry_number",
     "buyer_company_candidates",

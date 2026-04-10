@@ -645,6 +645,18 @@ def _buyer_company_ambiguous_message(lang: str, options: list[str]) -> str:
     return _buyer_company_ambiguous_message_text(lang, options)
 
 
+def _normalize_buyer_language_code(value: str | None) -> str | None:
+    raw = str(value or "").strip().lower().replace("_", "-")
+    if not raw:
+        return None
+    base = raw.split("-", 1)[0]
+    aliases = {"iw": "he", "heb": "he", "eng": "en", "rus": "ru", "ara": "ar"}
+    normalized = aliases.get(base, base)
+    if normalized not in {"en", "ru", "he", "ar"}:
+        return None
+    return normalized
+
+
 def _clear_pending_buyer_state(session: dict[str, Any]) -> None:
     session["buyer_company_name"] = None
     session["buyer_company_registry_number"] = None
@@ -690,6 +702,11 @@ def _apply_buyer_context(session: dict[str, Any], buyer_result: dict[str, Any]) 
         session["buyer_identity_id"] = buyer_result.get("buyer_identity_id")
     if buyer_result.get("phone"):
         session["buyer_phone"] = buyer_result.get("phone")
+    preferred_language = _normalize_buyer_language_code(buyer_result.get("preferred_language"))
+    if preferred_language:
+        session["buyer_preferred_language"] = preferred_language
+        if not str(session.get("lang") or "").strip():
+            session["lang"] = preferred_language
     if buyer_result.get("recognized_via"):
         session["buyer_recognized_via"] = buyer_result.get("recognized_via")
     if buyer_result.get("recognition_status"):
@@ -698,6 +715,38 @@ def _apply_buyer_context(session: dict[str, Any], buyer_result: dict[str, Any]) 
     session["recent_sales_orders"] = buyer_result.get("recent_sales_orders") or []
     session["recent_sales_invoices"] = buyer_result.get("recent_sales_invoices") or []
     session["returning_customer_announced"] = False
+
+
+async def _maybe_update_buyer_preferred_language(
+    *,
+    lc: Any,
+    company_code: str,
+    session: dict[str, Any],
+    current_lang: str | None,
+    lang_to_lock: str | None,
+) -> None:
+    buyer_identity_id = str(session.get("buyer_identity_id") or "").strip()
+    if not buyer_identity_id:
+        return
+    preferred_language = _normalize_buyer_language_code(lang_to_lock or current_lang)
+    if not preferred_language:
+        return
+    current_preferred = _normalize_buyer_language_code(session.get("buyer_preferred_language"))
+    if current_preferred == preferred_language:
+        return
+    try:
+        response = await lc.update_buyer_preferred_language(
+            company_code,
+            buyer_identity_id,
+            preferred_language=preferred_language,
+            source="message_language_signal",
+        )
+    except Exception as exc:
+        logger.warning("Failed to persist buyer preferred language for %s: %s", buyer_identity_id, exc)
+        return
+    session["buyer_preferred_language"] = _normalize_buyer_language_code(
+        response.get("preferred_language") if isinstance(response, dict) else preferred_language
+    ) or preferred_language
 
 
 def _is_returning_customer(session: dict[str, Any]) -> bool:
@@ -1696,6 +1745,14 @@ async def _process_message_result_locked(
     )
     if buyer_result and buyer_result.get("erp_customer_id"):
         _apply_buyer_context(session, buyer_result)
+        current_lang = _normalize_buyer_language_code(session.get("lang")) or current_lang
+        await _maybe_update_buyer_preferred_language(
+            lc=lc,
+            company_code=company_code,
+            session=session,
+            current_lang=current_lang,
+            lang_to_lock=lang_to_lock,
+        )
         await _emit_control_plane_event(
             lc=lc,
             company_code=company_code,
@@ -1847,6 +1904,14 @@ async def _process_message_result_locked(
                     "recent_sales_invoices": company_resolution.get("recent_sales_invoices") or [],
                 },
             )
+            current_lang = _normalize_buyer_language_code(session.get("lang")) or current_lang
+            await _maybe_update_buyer_preferred_language(
+                lc=lc,
+                company_code=company_code,
+                session=session,
+                current_lang=current_lang,
+                lang_to_lock=lang_to_lock,
+            )
             await _emit_control_plane_event(
                 lc=lc,
                 company_code=company_code,
@@ -1956,6 +2021,14 @@ async def _process_message_result_locked(
             if buyer_result and buyer_result.get("erp_customer_id"):
                 _apply_buyer_context(session, buyer_result)
                 session["buyer_name"] = intro_name
+                current_lang = _normalize_buyer_language_code(session.get("lang")) or current_lang
+                await _maybe_update_buyer_preferred_language(
+                    lc=lc,
+                    company_code=company_code,
+                    session=session,
+                    current_lang=current_lang,
+                    lang_to_lock=lang_to_lock,
+                )
                 needs_intro = False
                 await _emit_control_plane_event(
                     lc=lc,
@@ -2614,6 +2687,13 @@ async def _process_message_result_locked(
 
                 if tool_name == "register_buyer" and parsed_result.get("erp_customer_id"):
                     _apply_buyer_context(session, parsed_result)
+                    await _maybe_update_buyer_preferred_language(
+                        lc=lc,
+                        company_code=company_code,
+                        session=session,
+                        current_lang=current_lang,
+                        lang_to_lock=lang_to_lock,
+                    )
                 if tool_name in {"create_sales_order", "update_sales_order", "send_sales_order_pdf"} and parsed_result.get("name"):
                     session["last_sales_order_name"] = parsed_result.get("name")
                     session["last_order_activity_at"] = datetime.now(UTC).isoformat()

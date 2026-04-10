@@ -70,6 +70,7 @@ def _empty_session() -> dict[str, Any]:
         "buyer_name": None,
         "buyer_identity_id": None,
         "buyer_phone": None,
+        "buyer_preferred_language": None,
         "buyer_company_name": None,
         "buyer_company_registry_number": None,
         "buyer_company_candidates": [],

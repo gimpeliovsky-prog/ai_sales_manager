@@ -21,6 +21,7 @@ async def resolve_buyer(
             "contact_name": session.get("buyer_name"),
             "buyer_identity_id": session.get("buyer_identity_id"),
             "phone": session.get("buyer_phone"),
+            "preferred_language": session.get("buyer_preferred_language"),
             "recognized_via": "session",
             "recent_sales_orders": session.get("recent_sales_orders") or [],
             "recent_sales_invoices": session.get("recent_sales_invoices") or [],

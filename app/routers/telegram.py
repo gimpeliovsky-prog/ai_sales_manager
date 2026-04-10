@@ -85,6 +85,8 @@ def _seed_known_buyer_session(session: dict, known_buyer: dict, *, lang: str) ->
         updated["buyer_identity_id"] = known_buyer.get("buyer_identity_id")
     if known_buyer.get("phone"):
         updated["buyer_phone"] = known_buyer.get("phone")
+    if known_buyer.get("preferred_language"):
+        updated["buyer_preferred_language"] = known_buyer.get("preferred_language")
     if known_buyer.get("recognized_via"):
         updated["buyer_recognized_via"] = known_buyer.get("recognized_via")
     if known_buyer.get("recognition_status"):
@@ -93,7 +95,7 @@ def _seed_known_buyer_session(session: dict, known_buyer: dict, *, lang: str) ->
     updated["recent_sales_orders"] = known_buyer.get("recent_sales_orders") or []
     updated["recent_sales_invoices"] = known_buyer.get("recent_sales_invoices") or []
     updated["returning_customer_announced"] = True
-    updated["lang"] = lang
+    updated["lang"] = known_buyer.get("preferred_language") or lang
     return updated
 
 
