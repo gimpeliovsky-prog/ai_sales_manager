@@ -1,6 +1,6 @@
 import unittest
 
-from app.conversation_flow import classify_intent, classify_signal, classify_stage
+from app.conversation_flow import classify_intent, classify_signal, classify_stage, derive_conversation_state
 from app.inbound_policy import should_block_for_intro_before_assistance, should_request_intro_before_next_step
 
 
@@ -118,6 +118,44 @@ class InboundPolicyTests(unittest.TestCase):
         self.assertTrue(preserves_deal)
         self.assertEqual(emotion, "skeptical")
         self.assertGreaterEqual(confidence, 0.8)
+
+    def test_explicit_signal_classifier_output_overrides_fallback_signal_logic(self) -> None:
+        state = derive_conversation_state(
+            session={"stage": "discover", "last_intent": "find_product"},
+            user_text="מה נשמע",
+            channel="telegram",
+            needs_intro=False,
+            customer_identified=True,
+            active_order_name=None,
+            lead_profile={"status": "new_lead", "next_action": "ask_need"},
+            previous_lead_profile={"status": "new_lead"},
+            behavior_class="returning_customer",
+            behavior_confidence=0.7,
+            intent="find_product",
+            intent_confidence=0.6,
+            signal_type="small_talk",
+            signal_confidence=0.83,
+            signal_preserves_deal=True,
+            signal_emotion="positive",
+        )
+        self.assertEqual(state["signal_type"], "small_talk")
+        self.assertEqual(state["signal_emotion"], "positive")
+        self.assertTrue(state["signal_preserves_deal"])
+
+    def test_price_sensitive_behavior_can_still_fallback_to_price_objection_without_phrase_list(self) -> None:
+        signal_type, confidence, preserves_deal, emotion = classify_signal(
+            session={"stage": "discover"},
+            user_text="irrelevant wording",
+            intent="find_product",
+            behavior_class="price_sensitive",
+            active_order_name=None,
+            lead_profile={"product_interest": "laptop", "catalog_item_name": "Laptop"},
+            previous_lead_profile={"product_interest": "laptop"},
+        )
+        self.assertEqual(signal_type, "price_objection")
+        self.assertGreaterEqual(confidence, 0.8)
+        self.assertTrue(preserves_deal)
+        self.assertEqual(emotion, "skeptical")
 
 
 if __name__ == "__main__":

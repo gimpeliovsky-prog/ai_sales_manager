@@ -2369,7 +2369,14 @@ async def _process_message_result_locked(
     llm_signal_type = str(llm_state_result.get("signal_type") or "") if llm_is_valid else ""
     llm_signal_is_valid = isinstance(llm_signal_result, dict) and llm_signal_result.get("valid")
     llm_signal_confidence = float(llm_signal_result.get("confidence") or 0) if llm_signal_is_valid else 0.0
-    use_llm_signal = llm_signal_is_valid and llm_signal_confidence >= _signal_classifier_min_confidence(tenant)
+    llm_signal_type_only = str(llm_signal_result.get("signal_type") or "") if llm_signal_is_valid else ""
+    use_llm_signal = (
+        llm_signal_is_valid
+        and (
+            llm_signal_confidence >= _signal_classifier_min_confidence(tenant)
+            or (llm_signal_type_only in {"small_talk", "price_objection", "service_request", "topic_shift", "resume_previous_context"} and llm_signal_confidence >= 0.45)
+        )
+    )
     use_llm_state = (
         llm_is_valid
         and (

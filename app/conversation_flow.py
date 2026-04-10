@@ -596,7 +596,6 @@ def classify_signal(
 ) -> tuple[str, float, bool, str]:
     current_profile = _lead_profile_dict(lead_profile)
     previous_profile = _lead_profile_dict(previous_lead_profile)
-    normalized = _normalize_text(user_text)
 
     if intent == "human_handoff":
         return "handoff_request", 0.98, False, _signal_emotion(behavior_class)
@@ -606,8 +605,6 @@ def classify_signal(
         return "frustration", 0.92, True, "impatient"
     if intent == "service_request":
         return "service_request", 0.95, True, _signal_emotion(behavior_class)
-    if _PRICE_RE.search(normalized):
-        return "price_objection", 0.88, True, "skeptical"
     if behavior_class == "price_sensitive" and (
         current_profile.get("product_interest")
         or current_profile.get("catalog_item_code")
@@ -616,7 +613,7 @@ def classify_signal(
         return "price_objection", 0.8, True, "skeptical"
     if intent == "confirm_order":
         return "confirmation", 0.9, True, _signal_emotion(behavior_class)
-    if active_order_name and intent == "order_detail" and "?" in normalized:
+    if active_order_name and intent == "order_detail" and "?" in str(user_text or ""):
         return "availability_question", 0.72, True, _signal_emotion(behavior_class)
     if _changed_product_topic(
         session=session,
