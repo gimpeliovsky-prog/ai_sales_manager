@@ -629,6 +629,33 @@ def _clean_company_candidate(text: str) -> str | None:
     return _clean_company_candidate_text(text)
 
 
+def _select_company_candidate_query(text: str, candidates: list[dict[str, Any]] | None) -> str | None:
+    raw = str(text or "").strip()
+    if not raw or not isinstance(candidates, list):
+        return None
+
+    if raw.isdigit():
+        index = int(raw)
+        if 1 <= index <= len(candidates):
+            candidate = candidates[index - 1]
+            if isinstance(candidate, dict):
+                company_number = str(candidate.get("company_number") or "").strip()
+                company_name = str(candidate.get("company_name") or "").strip()
+                return company_number or company_name or None
+
+    normalized = raw.casefold()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        company_number = str(candidate.get("company_number") or "").strip()
+        company_name = str(candidate.get("company_name") or "").strip()
+        if company_number and normalized == company_number.casefold():
+            return company_number
+        if company_name and normalized == company_name.casefold():
+            return company_number or company_name
+    return None
+
+
 def get_intro_message(lang: str) -> str:
     return _intro_sales_contact_message_text(lang)
 
@@ -1814,7 +1841,8 @@ async def _process_message_result_locked(
             )
 
     if not session.get("erp_customer_id") and session.get("buyer_company_pending"):
-        company_name = _clean_company_candidate(user_text)
+        selected_company_query = _select_company_candidate_query(user_text, session.get("buyer_company_candidates"))
+        company_name = selected_company_query or _clean_company_candidate(user_text)
         if not company_name:
             session["stage"] = "identify"
             session["stage_confidence"] = 0.97
