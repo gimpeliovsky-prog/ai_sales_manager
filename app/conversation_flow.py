@@ -183,6 +183,13 @@ _HUMAN_RE = re.compile(
 _CONTACT_DETAILS_RE = re.compile(
     r"(?is)(?:\b(?:my\s+name\s+is|name\s+is|i\s+am|i'm|tel|phone|mobile|call\s+me)\b|\b[+0]?\d[\d\s().-]{7,}\d\b)"
 )
+_SMALL_TALK_RE = re.compile(
+    r"(?:\b(?:how are you|how're you|how are u|how is it going|how's it going|what's up|whats up|how have you been)\b|"
+    r"\b(?:как дела|как ты|как поживаешь|что нового)\b|"
+    r"(?:מה נשמע|מה שלומך|מה העניינים)|"
+    r"(?:كيف الحال|شلونك|كيفك|شو الأخبار))",
+    re.IGNORECASE,
+)
 
 # Override legacy hardcoded regexes with data-driven lexicon-backed patterns.
 _SERVICE_RE = service_regex()
@@ -371,6 +378,10 @@ def classify_behavior(text: str, session: dict[str, Any], ai_policy: dict[str, A
     normalized = _normalize_text(text)
     if not normalized:
         return "silent_or_low_signal", 0.95
+    if _SMALL_TALK_RE.search(text or ""):
+        if session.get("erp_customer_id"):
+            return "returning_customer", 0.86
+        return "silent_or_low_signal", 0.82
     configured = _classify_with_overrides(
         text=text,
         normalized=normalized,
@@ -399,6 +410,8 @@ def classify_intent(text: str, ai_policy: dict[str, Any] | None = None) -> tuple
     normalized = _normalize_text(text)
     if not normalized:
         return "low_signal", 0.95
+    if _SMALL_TALK_RE.search(text or ""):
+        return "low_signal", 0.9
     configured = _classify_with_overrides(
         text=text,
         normalized=normalized,
@@ -597,6 +610,10 @@ def get_handoff_message(lang: str, reason: str | None = None, ai_policy: dict[st
     if reason == "customer_requested_human":
         return i18n_text("handoff.customer_requested_human", lang, ai_policy=ai_policy)
     return message
+
+
+def is_social_small_talk_message(text: str | None) -> bool:
+    return bool(_SMALL_TALK_RE.search(str(text or "")))
 
 
 def advance_stage_after_tool(session: dict[str, Any], tool_name: str, tool_result: dict[str, Any]) -> None:

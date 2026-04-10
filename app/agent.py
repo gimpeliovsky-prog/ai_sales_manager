@@ -18,7 +18,14 @@ from app.buyer_intake import (
     get_intro_sales_contact_message as _intro_sales_contact_message_text,
     get_known_buyer_greeting as _known_buyer_greeting_text,
 )
-from app.conversation_flow import advance_stage_after_tool, classify_behavior, classify_intent, derive_conversation_state, get_handoff_message
+from app.conversation_flow import (
+    advance_stage_after_tool,
+    classify_behavior,
+    classify_intent,
+    derive_conversation_state,
+    get_handoff_message,
+    is_social_small_talk_message,
+)
 from app.conversation_boundary import is_short_greeting_message
 from app.config import get_settings
 from app.i18n import text as i18n_text
@@ -717,6 +724,16 @@ def _buyer_company_ambiguous_message(lang: str, options: list[str]) -> str:
 
 def _buyer_company_lookup_error_message(lang: str) -> str:
     return _buyer_company_lookup_error_message_text(lang)
+
+
+def _small_talk_reply(lang: str) -> str:
+    replies = {
+        "en": "I'm good, thanks. How can I help?",
+        "ru": "Все хорошо, спасибо. Чем могу помочь?",
+        "he": "הכול טוב, תודה. איך אפשר לעזור?",
+        "ar": "أنا بخير، شكرًا. كيف أستطيع المساعدة؟",
+    }
+    return replies.get(str(lang or "").strip().lower(), replies["en"])
 
 
 def _normalize_buyer_language_code(value: str | None) -> str | None:
@@ -1872,6 +1889,32 @@ async def _process_message_result_locked(
                     "buyer_name": session.get("buyer_name"),
                     "buyer_company_name": session.get("buyer_company_name"),
                     "conversation_reopened": True,
+                },
+            )
+        if is_social_small_talk_message(user_text):
+            session["stage"] = "new"
+            session["stage_confidence"] = 0.9
+            session["behavior_class"] = "returning_customer"
+            session["behavior_confidence"] = 0.86
+            session["last_intent"] = "low_signal"
+            session["last_intent_confidence"] = 0.9
+            session["handoff_required"] = False
+            session["handoff_reason"] = None
+            reply = _small_talk_reply(current_lang)
+            return await _finalize_intake_reply(
+                lc=lc,
+                company_code=company_code,
+                channel=channel,
+                channel_uid=channel_uid,
+                session=session,
+                user_text=user_text,
+                reply=reply,
+                result=result,
+                message_type="small_talk",
+                payload={
+                    "erp_customer_id": session.get("erp_customer_id"),
+                    "buyer_identity_id": session.get("buyer_identity_id"),
+                    "buyer_name": session.get("buyer_name"),
                 },
             )
 
