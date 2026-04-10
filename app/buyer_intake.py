@@ -28,6 +28,12 @@ _KNOWN_BUYER_GREETING = {
     "he": "שלום, {buyer_name}. איך אפשר לעזור?",
     "ar": "مرحبًا، {buyer_name}. كيف أستطيع المساعدة؟",
 }
+_INTRO_SALES_CONTACT = {
+    "en": "Hello. To get started, please send your name and phone number.",
+    "ru": "Здравствуйте. Чтобы начать, отправьте, пожалуйста, ваше имя и номер телефона.",
+    "he": "שלום. כדי להתחיל, שלח לי בבקשה את השם ומספר הטלפון שלך.",
+    "ar": "مرحبًا. للبدء، أرسل لي من فضلك اسمك ورقم هاتفك.",
+}
 _BUYER_COMPANY_REQUEST = {
     "en": "Thanks, {buyer_name}. I couldn't match your phone to an existing customer yet. Which company do you work for?",
     "ru": "Спасибо, {buyer_name}. Я пока не нашёл клиента по вашему номеру. В какой компании вы работаете?",
@@ -75,6 +81,10 @@ def get_known_buyer_greeting(lang: str, buyer_name: str | None = None) -> str:
         return i18n_text("welcome.generic", lang)
     template = _KNOWN_BUYER_GREETING.get(lang, _KNOWN_BUYER_GREETING["en"])
     return template.format(buyer_name=display_name)
+
+
+def get_intro_sales_contact_message(lang: str) -> str:
+    return _INTRO_SALES_CONTACT.get(lang, _INTRO_SALES_CONTACT["en"])
 
 
 def buyer_company_request_message(lang: str, buyer_name: str | None = None) -> str:

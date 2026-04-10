@@ -14,6 +14,7 @@ from app.buyer_intake import (
     buyer_company_retry_message as _buyer_company_retry_message_text,
     buyer_identity_review_message as _buyer_identity_review_message_text,
     clean_company_candidate as _clean_company_candidate_text,
+    get_intro_sales_contact_message as _intro_sales_contact_message_text,
     get_known_buyer_greeting as _known_buyer_greeting_text,
 )
 from app.conversation_flow import advance_stage_after_tool, classify_behavior, classify_intent, derive_conversation_state, get_handoff_message
@@ -627,7 +628,7 @@ def _clean_company_candidate(text: str) -> str | None:
 
 
 def get_intro_message(lang: str) -> str:
-    return i18n_text("intro.sales_contact", lang)
+    return _intro_sales_contact_message_text(lang)
 
 
 def get_known_buyer_greeting(lang: str, buyer_name: str | None = None) -> str:
