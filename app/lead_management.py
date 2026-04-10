@@ -302,6 +302,24 @@ def lead_progress_state(raw_profile: Any) -> dict[str, Any]:
     return {key: profile.get(key) for key in LEAD_PROGRESS_FIELDS if profile.get(key) not in (None, "", [])}
 
 
+def apply_lead_state_layers(
+    *,
+    current_profile: Any,
+    deal_state: dict[str, Any] | None = None,
+    progress_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    profile = normalize_lead_profile(current_profile)
+    if isinstance(deal_state, dict):
+        for key in LEAD_DEAL_FIELDS:
+            if key in deal_state:
+                profile[key] = deal_state.get(key)
+    if isinstance(progress_state, dict):
+        for key in LEAD_PROGRESS_FIELDS:
+            if key in progress_state:
+                profile[key] = progress_state.get(key)
+    return profile
+
+
 def ensure_lead_identity(
     *,
     current_profile: Any,
@@ -1038,6 +1056,67 @@ def _set_followup_strategy(*, profile: dict[str, Any], status: str, stage: str) 
     return profile
 
 
+def _finalize_profile_update(
+    *,
+    profile: dict[str, Any],
+    previous_status: str | None,
+    previous_temperature: str | None,
+    stage: str,
+    intent: str,
+    customer_identified: bool,
+    active_order_name: str | None,
+    now: datetime,
+    llm_next_action: str | None = None,
+) -> dict[str, Any]:
+    status = _status_for(
+        stage=stage,
+        intent=intent,
+        profile=profile,
+        active_order_name=active_order_name,
+    )
+    profile["status"] = status
+    profile["score"] = _score_profile(
+        profile=profile,
+        customer_identified=customer_identified,
+        stage=stage,
+        intent=intent,
+    )
+    profile["temperature"] = _temperature(int(profile["score"]))
+    profile["next_action"] = _next_action_for(
+        status=status,
+        stage=stage,
+        intent=intent,
+        profile=profile,
+        customer_identified=customer_identified,
+    )
+    resolved_llm_next_action = str(llm_next_action or "").strip()
+    if _llm_next_action_allowed(
+        next_action=resolved_llm_next_action,
+        profile=profile,
+        customer_identified=customer_identified,
+        status=status,
+    ):
+        profile["next_action"] = resolved_llm_next_action
+    if profile.get("order_correction_status") == "requested":
+        if profile.get("active_order_can_modify") is not None and intent == "tool_result":
+            profile["next_action"] = "apply_order_correction" if profile.get("active_order_can_modify") else "handoff_manager"
+        else:
+            profile["next_action"] = "clarify_order_correction"
+    _set_qualification_priority(
+        profile=profile,
+        status=status,
+        stage=stage,
+        customer_identified=customer_identified,
+    )
+    _set_followup_strategy(profile=profile, status=status, stage=stage)
+    return _mark_lifecycle(
+        profile=profile,
+        previous_status=previous_status,
+        previous_temperature=previous_temperature,
+        now=now,
+    )
+
+
 def _mark_lifecycle(
     *,
     profile: dict[str, Any],
@@ -1246,49 +1325,16 @@ def update_lead_profile_from_message(
         profile["previous_status_before_stall"] = None
     profile["last_customer_reply_at"] = resolved_now.isoformat()
 
-    status = _status_for(
-        stage=resolved_stage,
-        intent=resolved_intent,
-        profile=profile,
-        active_order_name=active_order_name,
-    )
-    profile["status"] = status
-    profile["score"] = _score_profile(
-        profile=profile,
-        customer_identified=customer_identified,
-        stage=resolved_stage,
-        intent=resolved_intent,
-    )
-    profile["temperature"] = _temperature(int(profile["score"]))
-    profile["next_action"] = _next_action_for(
-        status=status,
-        stage=resolved_stage,
-        intent=resolved_intent,
-        profile=profile,
-        customer_identified=customer_identified,
-    )
-    llm_next_action = str((llm_state_update or {}).get("next_action") or "").strip()
-    if _llm_next_action_allowed(
-        next_action=llm_next_action,
-        profile=profile,
-        customer_identified=customer_identified,
-        status=status,
-    ):
-        profile["next_action"] = llm_next_action
-    if profile.get("order_correction_status") == "requested":
-        profile["next_action"] = "clarify_order_correction"
-    _set_qualification_priority(
-        profile=profile,
-        status=status,
-        stage=resolved_stage,
-        customer_identified=customer_identified,
-    )
-    _set_followup_strategy(profile=profile, status=status, stage=resolved_stage)
-    return _mark_lifecycle(
+    return _finalize_profile_update(
         profile=profile,
         previous_status=previous_status,
         previous_temperature=previous_temperature,
+        stage=resolved_stage,
+        intent=resolved_intent,
+        customer_identified=customer_identified,
+        active_order_name=active_order_name,
         now=resolved_now,
+        llm_next_action=(llm_state_update or {}).get("next_action"),
     )
 
 
@@ -1458,48 +1504,21 @@ def update_lead_profile_from_tool(
             profile["quote_prepared_at"] = profile.get("quote_prepared_at") or resolved_now.isoformat()
         profile["expected_revenue"] = profile.get("quote_total")
 
-    if profile.get("status") != "won":
-        profile["status"] = _status_for(
-            stage=str(stage or ""),
-            intent="",
-            profile=profile,
-            active_order_name=active_order_name,
-        )
-    profile["score"] = _score_profile(
-        profile=profile,
-        customer_identified=customer_identified,
-        stage=str(stage or ""),
-        intent="",
-    )
-    profile["temperature"] = _temperature(int(profile["score"]))
     _set_product_resolution_state(profile)
     _synchronize_need_anchor(profile)
-    profile["next_action"] = _next_action_for(
-        status=str(profile.get("status") or "none"),
-        stage=str(stage or ""),
-        intent="tool_result",
-        profile=profile,
-        customer_identified=customer_identified,
-    )
-    if profile.get("order_correction_status") == "requested" and profile.get("active_order_can_modify") is not None:
-        profile["next_action"] = "apply_order_correction" if profile.get("active_order_can_modify") else "handoff_manager"
-    _set_qualification_priority(
-        profile=profile,
-        status=str(profile.get("status") or "none"),
-        stage=str(stage or ""),
-        customer_identified=customer_identified,
-    )
-    _set_followup_strategy(
-        profile=profile,
-        status=str(profile.get("status") or "none"),
-        stage=str(stage or ""),
-    )
-    return _mark_lifecycle(
+    finalized = _finalize_profile_update(
         profile=profile,
         previous_status=previous_status,
         previous_temperature=previous_temperature,
+        stage=str(stage or ""),
+        intent="tool_result",
+        customer_identified=customer_identified,
+        active_order_name=active_order_name,
         now=resolved_now,
     )
+    if previous_status == "won" and finalized.get("status") != "won":
+        finalized["status"] = "won"
+    return finalized
 
 
 def sales_event_type(previous_profile: Any, current_profile: Any) -> str | None:
@@ -1545,6 +1564,8 @@ def build_lead_event_payload(
     previous = normalize_lead_profile(previous_profile) if previous_profile is not None else None
     payload: dict[str, Any] = {
         "lead_profile": profile,
+        "deal_state": lead_deal_state(profile),
+        "progress_state": lead_progress_state(profile),
         "lead_id": profile.get("lead_id"),
         "lead_status": profile.get("status"),
         "lead_score": profile.get("score"),
@@ -1994,6 +2015,8 @@ def build_handoff_summary(session: dict[str, Any], *, reason: str | None = None)
     profile = normalize_lead_profile(session.get("lead_profile"))
     return {
         "reason": reason,
+        "deal_state": lead_deal_state(profile),
+        "progress_state": lead_progress_state(profile),
         "lead_status": profile.get("status"),
         "lead_score": profile.get("score"),
         "lead_temperature": profile.get("temperature"),

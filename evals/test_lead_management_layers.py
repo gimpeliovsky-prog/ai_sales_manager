@@ -1,0 +1,95 @@
+import unittest
+
+from app.lead_management import (
+    apply_lead_state_layers,
+    build_handoff_summary,
+    build_lead_event_payload,
+    update_lead_profile_from_message,
+    update_lead_profile_from_tool,
+)
+
+
+class LeadManagementLayersTests(unittest.TestCase):
+    def test_apply_lead_state_layers_merges_deal_and_progress(self) -> None:
+        profile = apply_lead_state_layers(
+            current_profile={"status": "none"},
+            deal_state={"product_interest": "laptop", "quantity": 2, "uom": "Nos"},
+            progress_state={"status": "qualified", "next_action": "quote_or_clarify_price"},
+        )
+        self.assertEqual(profile["product_interest"], "laptop")
+        self.assertEqual(profile["quantity"], 2)
+        self.assertEqual(profile["status"], "qualified")
+        self.assertEqual(profile["next_action"], "quote_or_clarify_price")
+
+    def test_build_lead_event_payload_includes_layer_exports(self) -> None:
+        session = {
+            "stage": "discover",
+            "behavior_class": "explorer",
+            "last_intent": "browse_catalog",
+            "lead_profile": {
+                "status": "qualified",
+                "product_interest": "monitor",
+                "quantity": 5,
+                "uom": "Nos",
+                "quote_status": "requested",
+                "next_action": "quote_or_clarify_price",
+            },
+        }
+        payload = build_lead_event_payload(session=session)
+        self.assertEqual(payload["deal_state"]["product_interest"], "monitor")
+        self.assertEqual(payload["deal_state"]["quantity"], 5)
+        self.assertEqual(payload["progress_state"]["status"], "qualified")
+        self.assertEqual(payload["progress_state"]["quote_status"], "requested")
+
+    def test_build_handoff_summary_includes_layer_exports(self) -> None:
+        session = {
+            "buyer_name": "Peter",
+            "lead_profile": {
+                "status": "quote_needed",
+                "product_interest": "Laptop",
+                "quantity": 3,
+                "uom": "Nos",
+                "quote_status": "requested",
+            },
+        }
+        summary = build_handoff_summary(session, reason="manager_attention_required")
+        self.assertEqual(summary["deal_state"]["product_interest"], "Laptop")
+        self.assertEqual(summary["progress_state"]["quote_status"], "requested")
+
+    def test_message_update_still_recomputes_progress(self) -> None:
+        profile = update_lead_profile_from_message(
+            current_profile={"status": "none"},
+            user_text="need 5 laptops",
+            stage="discover",
+            behavior_class="direct_buyer",
+            intent="find_product",
+            customer_identified=False,
+            active_order_name=None,
+        )
+        self.assertEqual(profile["product_interest"], "laptops")
+        self.assertEqual(profile["quantity"], 5)
+        self.assertEqual(profile["next_action"], "select_specific_item")
+
+    def test_tool_update_still_recomputes_progress(self) -> None:
+        profile = update_lead_profile_from_tool(
+            current_profile={
+                "status": "qualified",
+                "product_interest": "laptop",
+                "quantity": 5,
+                "uom": "Nos",
+                "quote_status": "requested",
+            },
+            tool_name="create_sales_order",
+            inputs={"items": [{"item_code": "SKU002", "qty": 5, "uom": "Nos"}]},
+            tool_result={"name": "SAL-ORD-2026-00025", "grand_total": 21500, "currency": "ILS"},
+            stage="confirm",
+            customer_identified=True,
+            active_order_name=None,
+        )
+        self.assertEqual(profile["status"], "order_created")
+        self.assertEqual(profile["target_order_id"], "SAL-ORD-2026-00025")
+        self.assertEqual(profile["quote_status"], "accepted")
+
+
+if __name__ == "__main__":
+    unittest.main()
