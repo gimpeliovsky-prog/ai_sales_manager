@@ -2262,6 +2262,14 @@ async def _process_message_result_locked(
     if not behavior_class:
         behavior_class = fallback_behavior_class
         behavior_confidence = fallback_behavior_confidence
+    if fallback_intent == "small_talk" and intent != "small_talk":
+        intent = "small_talk"
+        intent_confidence = fallback_intent_confidence
+        if isinstance(llm_state_result, dict):
+            llm_state_result["lead_patch"] = {}
+            llm_state_result["signal_type"] = "small_talk"
+            llm_state_result["signal_emotion"] = "positive"
+            llm_state_result["signal_preserves_deal"] = True
     if not intent:
         intent = fallback_intent
         intent_confidence = fallback_intent_confidence

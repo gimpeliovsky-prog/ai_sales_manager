@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.conversation_flow import looks_like_small_talk
 from app.lead_lexicon import (
     browse_scaffolding_regex,
     commercial_cue_regex,
@@ -409,6 +410,8 @@ def apply_llm_lead_patch(
     previous_interest = _clean_text(profile.get("product_interest"))
     if "product_interest" in patch:
         normalized_interest = _normalize_single_item_interest(patch.get("product_interest"), lead_config)
+        if normalized_interest and looks_like_small_talk(normalized_interest):
+            normalized_interest = None
         current_priority = str(profile.get("qualification_priority") or "product_need")
         patch_qty = _first_number(patch.get("quantity")) if "quantity" in patch else None
         patch_uom = canonical_uom(patch.get("uom"), merged_uom_config(lead_config, "single_item_uom_terms")) or _clean_text(patch.get("uom"), limit=40)
@@ -1177,6 +1180,10 @@ def _apply_message_signal_effects(
         )
     semantic_text = _semantic_message_text(user_text)
     normalized_text = _clean_text(semantic_text)
+    social_only_message = bool(normalized_text and looks_like_small_talk(normalized_text))
+    if social_only_message and intent in {"find_product", "browse_catalog"}:
+        intent = "small_talk"
+        normalized_text = None
     explicit_single_item_interest = _normalize_single_item_interest(normalized_text, lead_config)
     requested_items = _parse_requested_items(semantic_text)
     qty = _first_qty(semantic_text)

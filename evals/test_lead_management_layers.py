@@ -1,6 +1,7 @@
 import unittest
 
 from app.lead_management import (
+    apply_llm_lead_patch,
     apply_lead_state_layers,
     build_handoff_summary,
     build_lead_event_payload,
@@ -89,6 +90,28 @@ class LeadManagementLayersTests(unittest.TestCase):
         self.assertEqual(profile["status"], "order_created")
         self.assertEqual(profile["target_order_id"], "SAL-ORD-2026-00025")
         self.assertEqual(profile["quote_status"], "accepted")
+
+    def test_small_talk_message_does_not_seed_product_interest(self) -> None:
+        profile = update_lead_profile_from_message(
+            current_profile={"status": "none"},
+            user_text="hello how are you",
+            stage="discover",
+            behavior_class="returning_customer",
+            intent="find_product",
+            customer_identified=True,
+            active_order_name=None,
+        )
+        self.assertIsNone(profile.get("product_interest"))
+        self.assertIsNone(profile.get("need"))
+
+    def test_llm_patch_rejects_small_talk_as_product_interest(self) -> None:
+        profile = apply_llm_lead_patch(
+            current_profile={"status": "none"},
+            patch={"product_interest": "how are you"},
+            intent="find_product",
+        )
+        self.assertIsNone(profile.get("product_interest"))
+        self.assertIsNone(profile.get("need"))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from typing import Any
 
 from app.inbound_policy import has_product_context
 
+from app.conversation_boundary import is_short_greeting_message
 from app.conversation_lexicon import (
     add_to_order_regex,
     contact_details_regex,
@@ -220,6 +221,13 @@ _ORDER_RE = order_regex()
 _ADD_TO_ORDER_RE = add_to_order_regex()
 _HUMAN_RE = human_regex()
 _CONTACT_DETAILS_RE = contact_details_regex()
+
+
+def looks_like_small_talk(text: str | None) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    return bool(is_short_greeting_message(normalized) or _SMALL_TALK_RE.search(normalized))
 
 
 def _lead_profile_dict(profile: Any) -> dict[str, Any]:
@@ -449,6 +457,8 @@ def classify_intent(text: str, ai_policy: dict[str, Any] | None = None) -> tuple
         return "add_to_order", 0.88
     if _ORDER_RE.search(normalized):
         return "confirm_order", 0.82
+    if looks_like_small_talk(normalized):
+        return "small_talk", 0.92
     if _QTY_RE.search(normalized):
         return "order_detail", 0.7
     if _EXPLORE_RE.search(normalized):

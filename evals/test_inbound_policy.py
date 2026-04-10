@@ -1,6 +1,6 @@
 import unittest
 
-from app.conversation_flow import classify_signal, classify_stage
+from app.conversation_flow import classify_intent, classify_signal, classify_stage
 from app.inbound_policy import should_block_for_intro_before_assistance, should_request_intro_before_next_step
 
 
@@ -77,6 +77,11 @@ class InboundPolicyTests(unittest.TestCase):
             lead_profile={"status": "none", "next_action": "ask_need"},
         )
         self.assertEqual(stage, "new")
+
+    def test_small_talk_intent_is_detected_for_social_check_in(self) -> None:
+        intent, confidence = classify_intent("hello how are you")
+        self.assertEqual(intent, "small_talk")
+        self.assertGreaterEqual(confidence, 0.9)
 
     def test_small_talk_does_not_reset_existing_order_stage(self) -> None:
         stage, _ = classify_stage(

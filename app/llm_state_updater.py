@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any
 
+from app.conversation_flow import looks_like_small_talk
+
 ALLOWED_INTENTS = {
     "low_signal",
     "small_talk",
@@ -132,6 +134,8 @@ def parse_llm_state_update(text: str) -> dict[str, Any]:
         else:
             cleaned_value = _clean_text(value)
             if cleaned_value:
+                if key == "product_interest" and looks_like_small_talk(cleaned_value):
+                    continue
                 sanitized_patch[key] = cleaned_value
 
     if intent not in ALLOWED_INTENTS:
