@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from app.conversation_flow import classify_behavior, classify_commercial_intent_fallback, classify_intent
+from app.conversation_flow import (
+    classify_behavior,
+    classify_commercial_behavior_fallback,
+    classify_commercial_intent_fallback,
+    classify_intent,
+)
 from app.conversation_lexicon import contact_details_regex, load_conversation_lexicon
 
 
@@ -51,6 +56,16 @@ class ConversationLexiconTests(unittest.TestCase):
     def test_commercial_fallback_keeps_browse_catalog_intent(self) -> None:
         intent, confidence = classify_commercial_intent_fallback("show me catalog options")
         self.assertEqual(intent, "browse_catalog")
+        self.assertGreaterEqual(confidence, 0.7)
+
+    def test_commercial_behavior_fallback_does_not_infer_service_request(self) -> None:
+        behavior, confidence = classify_commercial_behavior_fallback("send invoice please", session={})
+        self.assertEqual(behavior, "unclear_request")
+        self.assertGreaterEqual(confidence, 0.5)
+
+    def test_commercial_behavior_fallback_keeps_direct_buyer(self) -> None:
+        behavior, confidence = classify_commercial_behavior_fallback("I want to place an order", session={})
+        self.assertEqual(behavior, "direct_buyer")
         self.assertGreaterEqual(confidence, 0.7)
 
     def test_contact_details_regex_matches_intro_or_phone(self) -> None:

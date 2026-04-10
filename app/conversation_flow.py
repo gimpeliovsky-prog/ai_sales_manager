@@ -473,6 +473,39 @@ def classify_behavior(text: str, session: dict[str, Any], ai_policy: dict[str, A
     return DEFAULT_BEHAVIOR_CLASS, 0.55
 
 
+def classify_commercial_behavior_fallback(
+    text: str,
+    session: dict[str, Any],
+    ai_policy: dict[str, Any] | None = None,
+) -> tuple[str, float]:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return "silent_or_low_signal", 0.95
+    configured = _classify_with_overrides(
+        text=text,
+        normalized=normalized,
+        rules=_classification_config(ai_policy).get("behavior_rules"),
+    )
+    if configured and configured[0] in {"direct_buyer", "explorer", "price_sensitive", "frustrated"}:
+        return configured
+    if _FRUSTRATED_RE.search(normalized):
+        return "frustrated", 0.9
+    if _PRICE_RE.search(normalized):
+        return "price_sensitive", 0.82
+    intent, intent_confidence = classify_commercial_intent_fallback(text, ai_policy=ai_policy)
+    behavior_from_intent = _behavior_from_intent(
+        intent=intent,
+        customer_identified=bool(session.get("erp_customer_id")),
+    )
+    if behavior_from_intent in {"direct_buyer", "explorer"}:
+        return behavior_from_intent, max(0.7, intent_confidence)
+    if session.get("erp_customer_id") and len(normalized) < 20:
+        return "returning_customer", 0.63
+    if len(normalized) < 8:
+        return "silent_or_low_signal", 0.75
+    return DEFAULT_BEHAVIOR_CLASS, 0.55
+
+
 def classify_intent(text: str, ai_policy: dict[str, Any] | None = None) -> tuple[str, float]:
     normalized = _normalize_text(text)
     if not normalized:
