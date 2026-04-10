@@ -41,6 +41,72 @@ LEAD_STATUSES = {
     "merged",
 }
 
+LEAD_DEAL_FIELDS = {
+    "product_interest",
+    "catalog_item_code",
+    "catalog_item_name",
+    "quantity",
+    "uom",
+    "requested_items",
+    "requested_item_count",
+    "requested_items_have_quantities",
+    "requested_items_need_uom_confirmation",
+    "requested_items_assumed_uom",
+    "requested_items_uom_assumption_status",
+    "urgency",
+    "delivery_need",
+    "price_sensitivity",
+    "decision_status",
+    "target_order_id",
+    "active_order_state",
+    "active_order_can_modify",
+    "active_order_checked_at",
+    "quote_currency",
+    "quote_total",
+    "quote_id",
+    "quote_pdf_url",
+    "order_total",
+    "currency",
+}
+
+LEAD_PROGRESS_FIELDS = {
+    "status",
+    "next_action",
+    "qualification_priority",
+    "qualification_priority_reason",
+    "product_resolution_status",
+    "catalog_candidate_count",
+    "catalog_lookup_query",
+    "catalog_lookup_status",
+    "catalog_lookup_match_count",
+    "catalog_lookup_at",
+    "availability_item_code",
+    "availability_item_name",
+    "availability_in_stock",
+    "availability_total_available_qty",
+    "availability_stock_uom",
+    "availability_warehouse",
+    "availability_default_warehouse",
+    "availability_known_warehouses",
+    "availability_needs_warehouse_selection",
+    "availability_checked_at",
+    "quote_status",
+    "quote_requested_at",
+    "quote_prepared_at",
+    "quote_sent_at",
+    "quote_accepted_at",
+    "quote_rejected_at",
+    "order_correction_status",
+    "correction_type",
+    "correction_requested_at",
+    "correction_confirmed_at",
+    "correction_applied_at",
+    "correction_rejected_at",
+    "separate_order_requested",
+    "temperature",
+    "score",
+}
+
 _QTY_RE = re.compile(r"\b\d+(?:[.,]\d+)?\b")
 _COMPACT_QTY_UOM_RE = re.compile(r"(?<!\w)(?P<qty>\d+(?:[.,]\d+)?)(?P<uom>[^\W\d_]{1,16})(?!\w)", re.UNICODE)
 _ITEM_QTY_SEGMENT_RE = re.compile(r"^\s*(?P<name>.+?)\s+(?P<qty>\d+(?:[.,]\d+)?)(?:\s+(?P<uom>[^\d,;]+))?\s*$")
@@ -224,6 +290,16 @@ def normalize_lead_profile(raw_profile: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         profile["followup_count"] = 0
     return profile
+
+
+def lead_deal_state(raw_profile: Any) -> dict[str, Any]:
+    profile = normalize_lead_profile(raw_profile)
+    return {key: profile.get(key) for key in LEAD_DEAL_FIELDS if profile.get(key) not in (None, "", [])}
+
+
+def lead_progress_state(raw_profile: Any) -> dict[str, Any]:
+    profile = normalize_lead_profile(raw_profile)
+    return {key: profile.get(key) for key in LEAD_PROGRESS_FIELDS if profile.get(key) not in (None, "", [])}
 
 
 def ensure_lead_identity(

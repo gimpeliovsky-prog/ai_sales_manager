@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.config import get_settings
+from app.conversation_contexts import active_lead_profile, set_active_lead_profile
 from app.lead_management import (
     build_lead_event_payload,
     can_send_followup,
@@ -19,7 +20,6 @@ from app.outbound_channels import mark_followup_attempt, mark_sales_owner_notifi
 from app.sales_governance import evaluate_sla_breaches, record_new_sla_breaches
 from app.sales_quality import update_session_quality
 from app.sales_timeline import append_lead_timeline_event
-from app.conversation_contexts import set_active_lead_profile
 from app.session_store import iter_session_snapshots, save_session_snapshot
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ class LeadFollowupWorker:
                 continue
             lead_config = await self._get_lead_config(company_code)
             stalled_detection_enabled = bool(lead_config.get("stalled_detection_enabled", True))
-            previous_profile = normalize_lead_profile(session.get("lead_profile"))
+            previous_profile = normalize_lead_profile(active_lead_profile(session))
             session_changed = False
             previous_quality_flags = list(session.get("quality_flags") or []) if isinstance(session.get("quality_flags"), list) else []
             quality = update_session_quality(session, ai_policy={"sales_policy": lead_config.get("sales_policy")} if isinstance(lead_config.get("sales_policy"), dict) else None)
@@ -131,7 +131,7 @@ class LeadFollowupWorker:
                 last_interaction_at=session.get("last_interaction_at"),
                 idle_after=self._stalled_after(lead_config),
             ))
-            current_profile = normalize_lead_profile(session.get("lead_profile"))
+            current_profile = normalize_lead_profile(active_lead_profile(session))
             if current_profile.get("status") != "stalled" or previous_profile.get("status") == "stalled":
                 if session_changed:
                     await save_session_snapshot(channel, uid, session)

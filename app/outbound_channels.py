@@ -4,7 +4,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from app.conversation_contexts import set_active_lead_profile
+from app.conversation_contexts import active_lead_profile, set_active_lead_profile
 from app.i18n import template as i18n_template, text as i18n_text
 from app.lead_management import normalize_lead_profile, normalize_telegram_username
 from app.lead_runtime_config import lead_config_from_ai_policy
@@ -39,7 +39,7 @@ def _routing_candidates(lead_config: dict[str, Any], session: dict[str, Any], *,
             lead_config.get("sales_escalation_telegram_username"),
         ]
     routing = lead_config.get("sales_owner_routing") if isinstance(lead_config.get("sales_owner_routing"), dict) else {}
-    profile = normalize_lead_profile(session.get("lead_profile"))
+    profile = normalize_lead_profile(active_lead_profile(session))
     lang = str(session.get("lang") or "").casefold()
     if profile.get("temperature") == "hot" and isinstance(routing.get("hot_leads"), list) and routing.get("hot_leads"):
         return "hot_leads", list(routing.get("hot_leads") or [])
@@ -137,7 +137,7 @@ def _next_step_label(lang: str, next_action: str) -> str:
 
 
 def build_followup_message(session: dict[str, Any], ai_policy: dict[str, Any] | None = None) -> str:
-    profile = normalize_lead_profile(session.get("lead_profile"))
+    profile = normalize_lead_profile(active_lead_profile(session))
     lang = str(session.get("lang") or "en")
     lead_config = _lead_config(ai_policy)
     product_interest = _clean_text(profile.get("product_interest") or profile.get("need") or "your request")
@@ -153,7 +153,7 @@ def build_followup_message(session: dict[str, Any], ai_policy: dict[str, Any] | 
 
 
 def build_sales_owner_message(session: dict[str, Any], reason: str | None = None) -> str:
-    profile = normalize_lead_profile(session.get("lead_profile"))
+    profile = normalize_lead_profile(active_lead_profile(session))
     lines = [
         "Р“РѕСЂСЏС‡РёР№ Р»РёРґ С‚СЂРµР±СѓРµС‚ РІРЅРёРјР°РЅРёСЏ.",
         f"РџСЂРёС‡РёРЅР°: {reason or 'hot_lead'}",
@@ -206,7 +206,7 @@ async def notify_sales_owner(
     escalation: bool = False,
 ) -> dict[str, Any]:
     lead_config = _lead_config(ai_policy)
-    profile = normalize_lead_profile(session.get("lead_profile"))
+    profile = normalize_lead_profile(active_lead_profile(session))
     if profile.get("sales_owner_status") in {"accepted", "closed_not_target"}:
         return {"sent": False, "status": "sales_owner_already_resolved"}
     owner_target = await _select_owner_target(lead_config=lead_config, session=session, escalation=escalation)
@@ -303,7 +303,7 @@ async def send_followup_message(
                     "channel_uid": channel_uid,
                     "company_code": session.get("company_code"),
                     "text": text,
-                    "lead_profile": session.get("lead_profile"),
+                    "lead_profile": active_lead_profile(session),
                     "channel_context": channel_context,
                 },
             )
@@ -333,7 +333,7 @@ async def send_followup_message(
 
 
 def mark_followup_attempt(session: dict[str, Any], delivery: dict[str, Any]) -> None:
-    profile = normalize_lead_profile(session.get("lead_profile"))
+    profile = normalize_lead_profile(active_lead_profile(session))
     now_iso = datetime.now(UTC).isoformat()
     profile["last_followup_attempt_at"] = now_iso
     if delivery.get("sent"):
@@ -349,7 +349,7 @@ def mark_followup_attempt(session: dict[str, Any], delivery: dict[str, Any]) -> 
 
 
 def mark_sales_owner_notification(session: dict[str, Any], delivery: dict[str, Any]) -> None:
-    profile = normalize_lead_profile(session.get("lead_profile"))
+    profile = normalize_lead_profile(active_lead_profile(session))
     if delivery.get("escalation"):
         profile["sales_owner_escalated_at"] = datetime.now(UTC).isoformat()
         profile["sales_owner_escalation_delivery"] = {

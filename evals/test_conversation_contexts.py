@@ -13,6 +13,7 @@ from app.conversation_contexts import (
     set_active_lead_profile,
     sync_legacy_to_active_context,
 )
+from app.lead_management import lead_deal_state, lead_progress_state
 
 
 class ConversationContextsTests(unittest.TestCase):
@@ -281,6 +282,20 @@ class ConversationContextsTests(unittest.TestCase):
         self.assertEqual(session["lead_profile"]["quote_status"], "requested")
         self.assertEqual(active_progress_state(session)["quote_status"], "requested")
         self.assertEqual(active_progress_state(session)["next_action"], "quote_or_clarify_price")
+
+    def test_lead_management_layer_helpers_split_profile_consistently(self) -> None:
+        profile = {
+            "product_interest": "laptop",
+            "quantity": 5,
+            "uom": "Nos",
+            "status": "qualified",
+            "next_action": "quote_or_clarify_price",
+            "quote_status": "requested",
+        }
+        self.assertEqual(lead_deal_state(profile)["product_interest"], "laptop")
+        self.assertEqual(lead_deal_state(profile)["quantity"], 5)
+        self.assertEqual(lead_progress_state(profile)["status"], "qualified")
+        self.assertEqual(lead_progress_state(profile)["quote_status"], "requested")
 
 
 if __name__ == "__main__":

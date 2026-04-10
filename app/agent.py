@@ -351,7 +351,7 @@ async def _apply_lead_dedupe(
     config = _dedupe_config(tenant)
     if config.get("dedupe_enabled", True) is False:
         return
-    profile = normalize_lead_profile(session.get("lead_profile"))
+    profile = normalize_lead_profile(active_lead_profile(session))
     if profile.get("duplicate_of_lead_id") or profile.get("merged_into_lead_id"):
         return
     if profile.get("status") in {"none", "won", "lost"}:
@@ -437,11 +437,11 @@ async def _emit_sales_event_if_changed(
     previous_profile: dict[str, Any] | None,
     lead_config: dict[str, Any] | None = None,
 ) -> None:
-    event_type = sales_event_type(previous_profile, session.get("lead_profile"))
-    alert_event_types = sales_alert_event_types(previous_profile, session.get("lead_profile"))
+    event_type = sales_event_type(previous_profile, active_lead_profile(session))
+    alert_event_types = sales_alert_event_types(previous_profile, active_lead_profile(session))
     if not event_type and not alert_event_types:
         return
-    profile = normalize_lead_profile(session.get("lead_profile"))
+    profile = normalize_lead_profile(active_lead_profile(session))
     previous = normalize_lead_profile(previous_profile)
     if previous.get("status") == "none" and profile.get("status") != "none" and event_type != "lead_created":
         append_lead_timeline_event(
@@ -493,7 +493,7 @@ async def _emit_sales_event_if_changed(
             payload=_lead_event_payload(session, previous_profile),
         )
         if alert_event_type in {"hot_lead_detected", "manager_attention_required"}:
-            if normalize_lead_profile(session.get("lead_profile")).get("sales_owner_status") in {"accepted", "closed_not_target"}:
+            if normalize_lead_profile(active_lead_profile(session)).get("sales_owner_status") in {"accepted", "closed_not_target"}:
                 continue
             delivery = await _notify_sales_owner_if_configured(
                 lead_config=lead_config or {},
@@ -951,7 +951,7 @@ async def _finalize_intake_reply(
         role="user",
         content=user_text,
         message_type="chat",
-        payload={"lead_profile": session.get("lead_profile")},
+        payload={"lead_profile": active_lead_profile(session)},
     )
     await _emit_transcript_message(
         lc=lc,
@@ -1105,7 +1105,7 @@ async def _maybe_prefetch_catalog_context(
     session: dict[str, Any],
     intent: str | None,
 ) -> str | None:
-    lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    lead_profile = normalize_lead_profile(active_lead_profile(session))
     if not should_prefetch_catalog_options(lead_profile=lead_profile, intent=intent):
         return None
     search_term = catalog_prefetch_search_term(lead_profile)
@@ -1132,7 +1132,7 @@ async def _maybe_prefetch_catalog_context(
     except json.JSONDecodeError:
         parsed_result = {"raw_result": result_str, "error": "invalid_prefetch_result"}
 
-    previous_tool_lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    previous_tool_lead_profile = normalize_lead_profile(active_lead_profile(session))
     set_active_lead_profile(session, update_lead_profile_from_tool(
         current_profile=previous_tool_lead_profile,
         tool_name="get_product_catalog",
@@ -1173,7 +1173,7 @@ async def _maybe_prefetch_catalog_context(
         payload={
             "tool_name": "get_product_catalog",
             "stage": session.get("stage"),
-            "lead_profile": session.get("lead_profile"),
+            "lead_profile": active_lead_profile(session),
             **summary,
         },
     )
@@ -1208,7 +1208,7 @@ async def _maybe_prefetch_availability_context(
     tenant: dict[str, Any],
     session: dict[str, Any],
 ) -> str | None:
-    lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    lead_profile = normalize_lead_profile(active_lead_profile(session))
     if not should_prefetch_item_availability(lead_profile=lead_profile, user_text=user_text):
         return None
     item_code = selected_item_code(lead_profile)
@@ -1235,7 +1235,7 @@ async def _maybe_prefetch_availability_context(
     except json.JSONDecodeError:
         parsed_result = {"raw_result": result_str, "error": "invalid_availability_prefetch_result"}
 
-    previous_tool_lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    previous_tool_lead_profile = normalize_lead_profile(active_lead_profile(session))
     set_active_lead_profile(session, update_lead_profile_from_tool(
         current_profile=previous_tool_lead_profile,
         tool_name="get_item_availability",
@@ -1275,7 +1275,7 @@ async def _maybe_prefetch_availability_context(
         payload={
             "tool_name": "get_item_availability",
             "stage": session.get("stage"),
-            "lead_profile": session.get("lead_profile"),
+            "lead_profile": active_lead_profile(session),
             **summary,
         },
     )
@@ -1313,7 +1313,7 @@ async def _maybe_prefetch_order_status_context(
     active_order_name = str(session.get("last_sales_order_name") or "").strip()
     if not active_order_name:
         return None
-    lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    lead_profile = normalize_lead_profile(active_lead_profile(session))
     stage = str(session.get("stage") or "").strip()
     intent = str(session.get("last_intent") or "").strip()
     correction_status = str(lead_profile.get("order_correction_status") or "").strip()
@@ -1348,7 +1348,7 @@ async def _maybe_prefetch_order_status_context(
     except json.JSONDecodeError:
         parsed_result = {"raw_result": result_str, "error": "invalid_order_status_prefetch_result"}
 
-    previous_tool_lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    previous_tool_lead_profile = normalize_lead_profile(active_lead_profile(session))
     set_active_lead_profile(session, update_lead_profile_from_tool(
         current_profile=previous_tool_lead_profile,
         tool_name="get_sales_order_status",
@@ -1388,7 +1388,7 @@ async def _maybe_prefetch_order_status_context(
         payload={
             "tool_name": "get_sales_order_status",
             "stage": session.get("stage"),
-            "lead_profile": session.get("lead_profile"),
+            "lead_profile": active_lead_profile(session),
             **summary,
         },
     )
@@ -1464,7 +1464,7 @@ def _format_customer_reply(text: str) -> str:
 def _build_confirmation_fallback_call(*, session: dict[str, Any], user_text: str) -> dict[str, Any] | None:
     if not has_explicit_confirmation(user_text):
         return None
-    lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    lead_profile = normalize_lead_profile(active_lead_profile(session))
     separate_order_requested = bool(lead_profile.get("separate_order_requested"))
     next_action = str(lead_profile.get("next_action") or "").strip()
     stage = str(session.get("stage") or "").strip()
@@ -1620,7 +1620,7 @@ async def _classify_state_with_llm(
     session: dict[str, Any],
     tenant: dict[str, Any],
 ) -> dict[str, Any]:
-    lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    lead_profile = normalize_lead_profile(active_lead_profile(session))
     recent_messages: list[dict[str, Any]] = []
     for row in list(session.get("messages") or [])[-6:]:
         if not isinstance(row, dict):
@@ -1723,7 +1723,7 @@ async def _classify_order_confirmation_with_llm(
             "reason": "regex_fallback_classifier_disabled" if has_explicit_confirmation(user_text) else "classifier_disabled",
             "source": "regex" if has_explicit_confirmation(user_text) else "disabled",
         }
-    lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    lead_profile = normalize_lead_profile(active_lead_profile(session))
     context = {
         "customer_message": user_text,
         "regex_confirmation_hint": has_explicit_confirmation(user_text),
@@ -1812,7 +1812,7 @@ async def _process_message_result_locked(
         merged_channel_context.update(channel_context)
         session["channel_context"] = merged_channel_context
     set_active_lead_profile(session, ensure_lead_identity(
-        current_profile=session.get("lead_profile"),
+        current_profile=active_lead_profile(session),
         company_code=company_code,
         channel=channel,
         channel_uid=channel_uid,
@@ -1823,7 +1823,7 @@ async def _process_message_result_locked(
             lambda profile: {**profile, "playbook_version": _playbook_version(tenant)},
         )
     set_active_lead_profile(session, update_lead_profile_source(
-        current_profile=session.get("lead_profile"),
+        current_profile=active_lead_profile(session),
         channel=channel,
         channel_context=session.get("channel_context") if isinstance(session.get("channel_context"), dict) else {},
     ))
@@ -1835,7 +1835,7 @@ async def _process_message_result_locked(
     )
     if lang_to_lock:
         session["lang"] = lang_to_lock
-    previous_stalled_profile = normalize_lead_profile(session.get("lead_profile"))
+    previous_stalled_profile = normalize_lead_profile(active_lead_profile(session))
     set_active_lead_profile(session, mark_stalled_if_needed(
         current_profile=previous_stalled_profile,
         last_interaction_at=session.get("last_interaction_at"),
@@ -2145,7 +2145,7 @@ async def _process_message_result_locked(
                     "buyer_company_registry_number": session.get("buyer_company_registry_number"),
                     "buyer_review_case_id": session.get("buyer_review_case_id"),
                     "handoff_summary": build_handoff_summary(session, reason="buyer_identity_review_required"),
-                    "lead_profile": session.get("lead_profile"),
+                    "lead_profile": active_lead_profile(session),
                     **_handoff_target(tenant),
                 },
             )
@@ -2214,7 +2214,7 @@ async def _process_message_result_locked(
                 )
     active_order_name = active_related_order_id(session) or session.get("last_sales_order_name")
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None
-    previous_lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    previous_lead_profile = normalize_lead_profile(active_lead_profile(session))
     llm_state_result: dict[str, Any] | None = None
     if _state_updater_enabled(tenant):
         try:
@@ -2297,7 +2297,7 @@ async def _process_message_result_locked(
             customer_identified=bool(session.get("erp_customer_id")),
             active_order_name=active_order_name,
             ai_policy=ai_policy,
-            lead_profile=session.get("lead_profile") if isinstance(session.get("lead_profile"), dict) else None,
+            lead_profile=active_lead_profile(session),
             previous_lead_profile=previous_lead_profile,
             behavior_class=behavior_class,
             behavior_confidence=behavior_confidence,
@@ -2348,7 +2348,7 @@ async def _process_message_result_locked(
         signal_emotion=session.get("signal_emotion"),
         handoff_required=session.get("handoff_required"),
         handoff_reason=session.get("handoff_reason"),
-        lead_profile=session.get("lead_profile"),
+        lead_profile=active_lead_profile(session),
         has_customer=bool(session.get("erp_customer_id")),
         has_active_order=bool(active_order_name),
         user_text_preview=_preview_text(user_text),
@@ -2372,7 +2372,7 @@ async def _process_message_result_locked(
             "signal_emotion": session.get("signal_emotion"),
             "handoff_required": session.get("handoff_required"),
             "handoff_reason": session.get("handoff_reason"),
-            "lead_profile": session.get("lead_profile"),
+            "lead_profile": active_lead_profile(session),
             "has_customer": bool(session.get("erp_customer_id")),
             "has_active_order": bool(active_order_name),
         },
@@ -2386,10 +2386,10 @@ async def _process_message_result_locked(
         role="user",
         content=user_text,
         message_type="chat",
-        payload={"lang": current_lang, "lead_profile": session.get("lead_profile")},
+        payload={"lang": current_lang, "lead_profile": active_lead_profile(session)},
     )
 
-    if normalize_lead_profile(session.get("lead_profile")).get("sales_owner_status") == "accepted":
+    if normalize_lead_profile(active_lead_profile(session)).get("sales_owner_status") == "accepted":
         reply = get_handoff_message(
             current_lang,
             "sales_owner_accepted",
@@ -2409,7 +2409,7 @@ async def _process_message_result_locked(
             channel=channel,
             channel_uid=channel_uid,
             event_type="human_takeover_active",
-            payload={"lead_profile": session.get("lead_profile")},
+            payload={"lead_profile": active_lead_profile(session)},
         )
         await _emit_transcript_message(
             lc=lc,
@@ -2420,7 +2420,7 @@ async def _process_message_result_locked(
             role="assistant",
             content=reply,
             message_type="handoff",
-            payload={"reason": "sales_owner_accepted", "lead_profile": session.get("lead_profile")},
+            payload={"reason": "sales_owner_accepted", "lead_profile": active_lead_profile(session)},
         )
         result["handoff_required"] = True
         result["handoff_reason"] = "sales_owner_accepted"
@@ -2442,7 +2442,7 @@ async def _process_message_result_locked(
             content=reply,
             message_type="small_talk",
             payload={
-                "lead_profile": session.get("lead_profile"),
+                "lead_profile": active_lead_profile(session),
                 "signal_type": session.get("signal_type"),
                 "signal_emotion": session.get("signal_emotion"),
             },
@@ -2494,7 +2494,7 @@ async def _process_message_result_locked(
                     "buyer_name": session.get("buyer_name"),
                     "active_order_name": session.get("last_sales_order_name"),
                     "handoff_summary": build_handoff_summary(session, reason=session.get("handoff_reason")),
-                    "lead_profile": session.get("lead_profile"),
+                    "lead_profile": active_lead_profile(session),
                     **_handoff_target(tenant),
                 },
             )
@@ -2602,7 +2602,7 @@ async def _process_message_result_locked(
                 "buyer_name": session.get("buyer_name"),
                 "active_order_name": session.get("last_sales_order_name"),
                 "handoff_summary": build_handoff_summary(session, reason=session.get("handoff_reason")),
-                "lead_profile": session.get("lead_profile"),
+                "lead_profile": active_lead_profile(session),
                 **_handoff_target(tenant),
             },
         )
@@ -2732,7 +2732,7 @@ async def _process_message_result_locked(
                     channel_uid=channel_uid,
                     tool_name=fallback_call.get("name"),
                     reason="explicit_confirmation_without_model_tool_call",
-                    lead_profile=session.get("lead_profile"),
+                    lead_profile=active_lead_profile(session),
                 )
 
             tool_outputs: list[dict[str, Any]] = []
@@ -2764,7 +2764,7 @@ async def _process_message_result_locked(
                         "tool_name": tool_name,
                         "stage": session.get("stage"),
                         "behavior_class": session.get("behavior_class"),
-                        "lead_profile": session.get("lead_profile"),
+                        "lead_profile": active_lead_profile(session),
                         "inputs": inputs,
                     },
                 )
@@ -2892,7 +2892,7 @@ async def _process_message_result_locked(
                         }
                     )
                 advance_stage_after_tool(session, tool_name, parsed_result)
-                previous_tool_lead_profile = normalize_lead_profile(session.get("lead_profile"))
+                previous_tool_lead_profile = normalize_lead_profile(active_lead_profile(session))
                 set_active_lead_profile(session, update_lead_profile_from_tool(
                     current_profile=previous_tool_lead_profile,
                     tool_name=tool_name,
@@ -2934,7 +2934,7 @@ async def _process_message_result_locked(
                     payload={
                         "tool_name": tool_name,
                         "stage": session.get("stage"),
-                        "lead_profile": session.get("lead_profile"),
+                        "lead_profile": active_lead_profile(session),
                         **summary,
                     },
                 )
@@ -3047,7 +3047,7 @@ async def _process_message_result_locked(
         stage=session.get("stage"),
         behavior_class=session.get("behavior_class"),
         handoff_required=session.get("handoff_required"),
-        lead_profile=session.get("lead_profile"),
+        lead_profile=active_lead_profile(session),
         active_order_name=session.get("last_sales_order_name"),
         document_count=len(result.get("documents", [])),
         reply_preview=_preview_text(final_reply),
@@ -3063,7 +3063,7 @@ async def _process_message_result_locked(
             "stage": session.get("stage"),
             "behavior_class": session.get("behavior_class"),
             "handoff_required": session.get("handoff_required"),
-            "lead_profile": session.get("lead_profile"),
+            "lead_profile": active_lead_profile(session),
             "active_order_name": session.get("last_sales_order_name"),
             "document_count": len(result.get("documents", [])),
         },
@@ -3077,7 +3077,7 @@ async def _process_message_result_locked(
             event_type="conversation_closed",
             payload={
                 "active_order_name": session.get("last_sales_order_name"),
-                "lead_profile": session.get("lead_profile"),
+                "lead_profile": active_lead_profile(session),
             },
         )
     await _emit_transcript_message(
@@ -3089,7 +3089,7 @@ async def _process_message_result_locked(
         role="assistant",
         content=final_reply,
         message_type="closed" if session.get("stage") == "closed" else "chat",
-        payload={"documents": result.get("documents", []), "lead_profile": session.get("lead_profile")},
+        payload={"documents": result.get("documents", []), "lead_profile": active_lead_profile(session)},
     )
     result["text"] = final_reply
     return result

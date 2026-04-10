@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.conversation_contexts import active_lead_profile
 from app.lead_management import normalize_lead_profile
 
 
@@ -35,7 +36,7 @@ def evaluate_sla_breaches(
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     config = lead_config if isinstance(lead_config, dict) else {}
-    profile = normalize_lead_profile(session.get("lead_profile"))
+    profile = normalize_lead_profile(active_lead_profile(session))
     resolved_now = now or datetime.now(UTC)
     if resolved_now.tzinfo is None:
         resolved_now = resolved_now.replace(tzinfo=UTC)

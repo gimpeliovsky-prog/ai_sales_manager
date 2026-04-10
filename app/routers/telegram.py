@@ -7,9 +7,9 @@ from fastapi import APIRouter, Header, HTTPException, Path, Request
 
 from app.agent import get_intro_message, get_known_buyer_greeting, process_message_result
 from app.config import get_settings
+from app.conversation_contexts import active_lead_profile, set_active_lead_profile
 from app.i18n import text as i18n_text
 from app.greeting_policy import select_contact_display_name
-from app.conversation_contexts import set_active_lead_profile
 from app.lead_management import apply_sales_owner_action, build_lead_event_payload, normalize_telegram_username
 from app.license_client import get_license_client
 from app.outbound_channels import lost_reason_buttons
@@ -329,9 +329,9 @@ async def _handle_owner_callback(
         return True
 
     channel, uid, session = resolved
-    previous_profile = session.get("lead_profile")
+    previous_profile = active_lead_profile(session)
     set_active_lead_profile(session, apply_sales_owner_action(
-        current_profile=session.get("lead_profile"),
+        current_profile=active_lead_profile(session),
         action="close" if lost_reason else action,
         actor_id=actor_id,
         lost_reason=lost_reason,

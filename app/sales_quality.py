@@ -4,6 +4,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from app.conversation_contexts import active_lead_profile
 from app.lead_management import normalize_lead_profile
 from app.sales_policy import sales_policy
 
@@ -39,7 +40,7 @@ def _timeline_has(session: dict[str, Any], *event_types: str) -> bool:
 
 
 def evaluate_conversation_quality(session: dict[str, Any], ai_policy: dict[str, Any] | None = None) -> dict[str, Any]:
-    profile = normalize_lead_profile(session.get("lead_profile"))
+    profile = normalize_lead_profile(active_lead_profile(session))
     policy = sales_policy(ai_policy)
     flags: list[str] = []
     notes: list[str] = []

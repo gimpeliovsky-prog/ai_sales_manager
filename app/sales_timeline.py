@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from app.conversation_contexts import active_lead_profile
 from app.lead_management import normalize_lead_profile
 
 
@@ -67,7 +68,7 @@ def append_lead_timeline_event(
     now: datetime | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
-    profile = normalize_lead_profile(session.get("lead_profile"))
+    profile = normalize_lead_profile(active_lead_profile(session))
     timeline = session.get("lead_timeline")
     if not isinstance(timeline, list):
         timeline = []

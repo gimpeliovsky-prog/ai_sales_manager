@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.conversation_contexts import active_lead_profile
 from app.interaction_patterns import has_explicit_confirmation
 from app.lead_management import normalize_lead_profile
 from app.uom_semantics import canonical_uom
@@ -17,7 +18,7 @@ def message_completes_order_details(
 ) -> bool:
     if tool_name not in {"create_sales_order", "update_sales_order"}:
         return False
-    lead_profile = normalize_lead_profile(session.get("lead_profile"))
+    lead_profile = normalize_lead_profile(active_lead_profile(session))
     if tool_name == "create_sales_order" and not lead_profile.get("separate_order_requested"):
         return False
     if tool_name == "update_sales_order" and str(lead_profile.get("order_correction_status") or "").strip() != "requested":

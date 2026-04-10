@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Callable
 
-from app.lead_management import normalize_lead_profile
+from app.lead_management import LEAD_DEAL_FIELDS, LEAD_PROGRESS_FIELDS, normalize_lead_profile
 
 DEFAULT_CONTEXT_TYPE = "new_purchase"
 CONTEXT_TYPES = {
@@ -48,71 +48,6 @@ _QUOTE_FIELDS = {
     "quote_last_comment",
     "quote_last_updated_at",
 }
-_DEAL_FIELDS = {
-    "product_interest",
-    "catalog_item_code",
-    "catalog_item_name",
-    "quantity",
-    "uom",
-    "requested_items",
-    "requested_item_count",
-    "requested_items_have_quantities",
-    "requested_items_need_uom_confirmation",
-    "requested_items_assumed_uom",
-    "requested_items_uom_assumption_status",
-    "urgency",
-    "delivery_need",
-    "price_sensitivity",
-    "decision_status",
-    "target_order_id",
-    "active_order_state",
-    "active_order_can_modify",
-    "active_order_checked_at",
-    "quote_currency",
-    "quote_total",
-    "quote_id",
-    "quote_pdf_url",
-    "order_total",
-    "currency",
-}
-_PROGRESS_FIELDS = {
-    "status",
-    "next_action",
-    "qualification_priority",
-    "qualification_priority_reason",
-    "product_resolution_status",
-    "catalog_candidate_count",
-    "catalog_lookup_query",
-    "catalog_lookup_status",
-    "catalog_lookup_match_count",
-    "catalog_lookup_at",
-    "availability_item_code",
-    "availability_item_name",
-    "availability_in_stock",
-    "availability_total_available_qty",
-    "availability_stock_uom",
-    "availability_warehouse",
-    "availability_default_warehouse",
-    "availability_known_warehouses",
-    "availability_needs_warehouse_selection",
-    "availability_checked_at",
-    "quote_status",
-    "quote_requested_at",
-    "quote_prepared_at",
-    "quote_sent_at",
-    "quote_accepted_at",
-    "quote_rejected_at",
-    "order_correction_status",
-    "correction_type",
-    "correction_requested_at",
-    "correction_confirmed_at",
-    "correction_applied_at",
-    "correction_rejected_at",
-    "separate_order_requested",
-    "temperature",
-    "score",
-}
-
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
@@ -266,7 +201,7 @@ def _dict_subset(profile: dict[str, Any], keys: set[str]) -> dict[str, Any]:
 
 
 def _deal_state_from_profile(profile: dict[str, Any], *, related_order_id: str | None = None) -> dict[str, Any]:
-    deal = _dict_subset(profile, _DEAL_FIELDS)
+    deal = _dict_subset(profile, LEAD_DEAL_FIELDS)
     if related_order_id:
         deal["related_order_id"] = related_order_id
     return deal
@@ -280,7 +215,7 @@ def _progress_state_from_profile(
     behavior_class: str,
     behavior_confidence: float,
 ) -> dict[str, Any]:
-    progress = _dict_subset(profile, _PROGRESS_FIELDS)
+    progress = _dict_subset(profile, LEAD_PROGRESS_FIELDS)
     progress["stage"] = stage
     progress["stage_confidence"] = float(stage_confidence or 0.0)
     progress["behavior_class"] = behavior_class
@@ -467,7 +402,7 @@ def set_active_lead_profile(
         event_type=event_type,
         event_payload=event_payload,
     )
-    return normalize_lead_profile(session.get("lead_profile"))
+    return active_lead_profile(session)
 
 
 def mutate_active_lead_profile(
@@ -477,7 +412,7 @@ def mutate_active_lead_profile(
     event_type: str | None = None,
     event_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    current_profile = normalize_lead_profile(session.get("lead_profile"))
+    current_profile = active_lead_profile(session)
     updated_profile = mutator(current_profile)
     return set_active_lead_profile(
         session,

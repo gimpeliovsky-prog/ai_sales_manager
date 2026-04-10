@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 
 from app.config import get_settings
-from app.conversation_contexts import set_active_lead_profile
+from app.conversation_contexts import active_lead_profile, set_active_lead_profile
 from app.lead_management import apply_lead_merge, apply_manual_close, apply_order_correction_update, apply_quote_update, record_merged_duplicate
 from app.sales_quality import update_session_quality
 from app.sales_lead_repository import get_sales_lead_repository
@@ -392,7 +392,7 @@ async def _update_quote_status(
     if resolved:
         channel, uid, session = resolved
         set_active_lead_profile(session, apply_quote_update(
-            current_profile=session.get("lead_profile"),
+            current_profile=active_lead_profile(session),
             quote_status=quote_status,
             actor_id=actor_id,
             quote_id=data.get("quote_id"),
@@ -504,7 +504,7 @@ async def _update_order_correction(
     if resolved:
         channel, uid, session = resolved
         set_active_lead_profile(session, apply_order_correction_update(
-            current_profile=session.get("lead_profile"),
+            current_profile=active_lead_profile(session),
             correction_status=correction_status,
             target_order_id=data.get("target_order_id") or session.get("last_sales_order_name"),
             correction_type=data.get("correction_type"),
@@ -569,7 +569,7 @@ async def manually_close_lead(
     if resolved:
         channel, uid, session = resolved
         set_active_lead_profile(session, apply_manual_close(
-            current_profile=session.get("lead_profile"),
+            current_profile=active_lead_profile(session),
             outcome=outcome,
             actor_id=actor_id,
             lost_reason=data.get("lost_reason"),
