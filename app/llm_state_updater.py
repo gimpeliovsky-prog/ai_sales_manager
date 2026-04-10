@@ -6,6 +6,7 @@ from typing import Any
 
 ALLOWED_INTENTS = {
     "low_signal",
+    "small_talk",
     "find_product",
     "browse_catalog",
     "order_detail",

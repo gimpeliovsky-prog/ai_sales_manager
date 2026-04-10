@@ -264,6 +264,8 @@ def _derive_stage_from_state(
 
     if intent == "human_handoff":
         return "handoff", 0.98
+    if intent == "small_talk":
+        return "new", 0.86
     if status == "service" or intent == "service_request":
         return "service", 0.95
     if separate_order_requested:
@@ -378,10 +380,6 @@ def classify_behavior(text: str, session: dict[str, Any], ai_policy: dict[str, A
     normalized = _normalize_text(text)
     if not normalized:
         return "silent_or_low_signal", 0.95
-    if _SMALL_TALK_RE.search(text or ""):
-        if session.get("erp_customer_id"):
-            return "returning_customer", 0.86
-        return "silent_or_low_signal", 0.82
     configured = _classify_with_overrides(
         text=text,
         normalized=normalized,
@@ -410,8 +408,6 @@ def classify_intent(text: str, ai_policy: dict[str, Any] | None = None) -> tuple
     normalized = _normalize_text(text)
     if not normalized:
         return "low_signal", 0.95
-    if _SMALL_TALK_RE.search(text or ""):
-        return "low_signal", 0.9
     configured = _classify_with_overrides(
         text=text,
         normalized=normalized,
@@ -610,10 +606,6 @@ def get_handoff_message(lang: str, reason: str | None = None, ai_policy: dict[st
     if reason == "customer_requested_human":
         return i18n_text("handoff.customer_requested_human", lang, ai_policy=ai_policy)
     return message
-
-
-def is_social_small_talk_message(text: str | None) -> bool:
-    return bool(_SMALL_TALK_RE.search(str(text or "")))
 
 
 def advance_stage_after_tool(session: dict[str, Any], tool_name: str, tool_result: dict[str, Any]) -> None:

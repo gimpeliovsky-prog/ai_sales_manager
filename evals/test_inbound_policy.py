@@ -25,6 +25,16 @@ class InboundPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_unknown_buyer_small_talk_is_not_forced_into_intro(self) -> None:
+        self.assertFalse(
+            should_block_for_intro_before_assistance(
+                needs_intro=True,
+                customer_identified=False,
+                intent="small_talk",
+                lead_profile={},
+            )
+        )
+
     def test_unknown_buyer_requests_intro_only_when_next_action_is_ask_contact(self) -> None:
         self.assertTrue(
             should_request_intro_before_next_step(
@@ -56,6 +66,17 @@ class InboundPolicyTests(unittest.TestCase):
             },
         )
         self.assertEqual(stage, "discover")
+
+    def test_stage_for_small_talk_is_new(self) -> None:
+        stage, _ = classify_stage(
+            session={},
+            intent="small_talk",
+            customer_identified=False,
+            needs_intro=True,
+            active_order_name=None,
+            lead_profile={"status": "none", "next_action": "ask_need"},
+        )
+        self.assertEqual(stage, "new")
 
 
 if __name__ == "__main__":
