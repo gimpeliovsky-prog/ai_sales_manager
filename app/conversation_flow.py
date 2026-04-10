@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.inbound_policy import has_product_context
+
 from app.conversation_lexicon import (
     add_to_order_regex,
     contact_details_regex,
@@ -265,7 +267,7 @@ def _derive_stage_from_state(
         return ("closed", 0.93) if previous_stage == "closed" else ("invoice", 0.93)
     if status == "handoff":
         return "handoff", 0.97
-    if needs_intro or not customer_identified:
+    if not customer_identified and not has_product_context(lead_profile):
         if intent in {"low_signal", "service_request"} and not lead_profile.get("product_interest"):
             return "identify", 0.95
         return "lead_capture", 0.88

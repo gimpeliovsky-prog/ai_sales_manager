@@ -22,6 +22,7 @@ from app.conversation_boundary import is_short_greeting_message
 from app.config import get_settings
 from app.i18n import text as i18n_text
 from app.interaction_patterns import has_explicit_confirmation
+from app.inbound_policy import should_block_for_intro_before_assistance, should_request_intro_before_next_step
 from app.language_policy import resolve_conversation_language
 from app.lead_management import (
     apply_llm_lead_patch,
@@ -2077,24 +2078,6 @@ async def _process_message_result_locked(
                     message_type="buyer_company_request",
                     payload={"buyer_name": intro_name, "buyer_phone": intro_phone},
                 )
-        else:
-            session["stage"] = "identify"
-            session["stage_confidence"] = 0.97
-            session["handoff_required"] = False
-            session["handoff_reason"] = None
-            reply = get_intro_message(current_lang)
-            return await _finalize_intake_reply(
-                lc=lc,
-                company_code=company_code,
-                channel=channel,
-                channel_uid=channel_uid,
-                session=session,
-                user_text=user_text,
-                reply=reply,
-                result=result,
-                message_type="intro",
-            )
-
     active_order_name = session.get("last_sales_order_name")
     ai_policy = tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None
     previous_lead_profile = normalize_lead_profile(session.get("lead_profile"))
@@ -2288,12 +2271,16 @@ async def _process_message_result_locked(
         result["text"] = reply
         return result
 
-    if (
-        needs_intro
-        and not session.get("erp_customer_id")
-        and session.get("stage") == "identify"
-        and session.get("last_intent") in {"low_signal", "service_request"}
-        and not normalize_lead_profile(session.get("lead_profile")).get("product_interest")
+    normalized_runtime_profile = normalize_lead_profile(session.get("lead_profile"))
+    if should_block_for_intro_before_assistance(
+        needs_intro=needs_intro,
+        customer_identified=bool(session.get("erp_customer_id")),
+        intent=session.get("last_intent"),
+        lead_profile=normalized_runtime_profile,
+    ) or should_request_intro_before_next_step(
+        needs_intro=needs_intro,
+        customer_identified=bool(session.get("erp_customer_id")),
+        lead_profile=normalized_runtime_profile,
     ):
         if session.get("handoff_required"):
             reply = get_handoff_message(

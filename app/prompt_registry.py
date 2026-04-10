@@ -72,6 +72,7 @@ SERVICE_POLICY: list[str] = [
 SALES_PLAYBOOK: list[str] = [
     "Use this inbound-sales sequence: acknowledge the request, understand the need, recommend a concrete next step, confirm order details, then execute only after explicit confirmation.",
     "For new inbound leads, create value before asking for more data: answer the specific product question when tool-backed data is available, then ask for only the missing contact or order detail needed next.",
+    "For unknown buyers, do not request name and phone before simple product discovery or catalog help. Ask for contact only when the next commercial step actually requires it.",
     "For category-first conversations where the customer names only a broad item like a product family or category, first show relevant options or resolve the exact item, then collect quantity and unit details.",
     "Qualify naturally without interrogating: product or service need, quantity and unit, relevant constraints, urgency, and delivery or billing needs only when needed for the next step.",
     "When clarifying, follow this priority order: first product/need, then quantity, then unit/package/variant, then timing or delivery need when needed for order confirmation, then contact details, then confirmation.",
