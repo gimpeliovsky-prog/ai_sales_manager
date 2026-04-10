@@ -42,6 +42,7 @@ from app.outbound_channels import mark_sales_owner_notification, notify_sales_ow
 from app.order_confirmation import message_completes_order_details
 from app.phone_numbers import normalize_phone as _normalize_phone
 from app.prompt_registry import build_runtime_system_prompt
+from app.greeting_policy import returning_customer_prefix as _returning_customer_prefix_text, select_contact_display_name
 from app.runtime_availability_context import build_availability_prefetch_context, selected_item_code, should_prefetch_item_availability
 from app.runtime_catalog_context import build_catalog_prefetch_context, catalog_prefetch_search_term, should_prefetch_catalog_options
 from app.sales_dedupe import detect_duplicate_lead
@@ -691,7 +692,7 @@ def _apply_buyer_context(session: dict[str, Any], buyer_result: dict[str, Any]) 
     _clear_pending_buyer_state(session)
     if buyer_result.get("erp_customer_id"):
         session["erp_customer_id"] = buyer_result.get("erp_customer_id")
-    contact_name = buyer_result.get("contact_name") or buyer_result.get("erp_customer_name")
+    contact_name = select_contact_display_name(buyer_result.get("contact_name"), session.get("buyer_name"))
     if contact_name:
         session["buyer_name"] = contact_name
     if buyer_result.get("erp_customer_name"):
@@ -754,9 +755,7 @@ def _is_returning_customer(session: dict[str, Any]) -> bool:
 
 
 def _returning_customer_prefix(lang: str, buyer_name: str | None = None) -> str:
-    display_name = str(buyer_name or "").strip()
-    suffix = f", {display_name}" if display_name else ""
-    return i18n_text("returning_customer.prefix", lang, {"customer_suffix": suffix})
+    return _returning_customer_prefix_text(lang)
 
 def _maybe_prefix_returning_customer(session: dict[str, Any], lang: str, reply: str) -> str:
     if not reply:

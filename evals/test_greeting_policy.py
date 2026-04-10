@@ -1,0 +1,18 @@
+import unittest
+
+from app.greeting_policy import returning_customer_prefix, select_contact_display_name
+
+
+class GreetingPolicyTests(unittest.TestCase):
+    def test_returning_customer_prefix_does_not_include_name(self) -> None:
+        self.assertEqual(returning_customer_prefix("en"), "Glad to help again.")
+
+    def test_select_contact_display_name_prefers_contact(self) -> None:
+        self.assertEqual(select_contact_display_name("Peter", "my name is peter tel"), "Peter")
+
+    def test_select_contact_display_name_preserves_existing_name_when_contact_missing(self) -> None:
+        self.assertEqual(select_contact_display_name(None, "Peter"), "Peter")
+
+
+if __name__ == "__main__":
+    unittest.main()

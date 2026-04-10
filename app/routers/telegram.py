@@ -8,6 +8,7 @@ from fastapi import APIRouter, Header, HTTPException, Path, Request
 from app.agent import get_intro_message, get_known_buyer_greeting, process_message_result
 from app.config import get_settings
 from app.i18n import text as i18n_text
+from app.greeting_policy import select_contact_display_name
 from app.lead_management import apply_sales_owner_action, build_lead_event_payload, normalize_telegram_username
 from app.license_client import get_license_client
 from app.outbound_channels import lost_reason_buttons
@@ -76,7 +77,7 @@ def _seed_known_buyer_session(session: dict, known_buyer: dict, *, lang: str) ->
     updated = dict(session or {})
     if known_buyer.get("erp_customer_id"):
         updated["erp_customer_id"] = known_buyer.get("erp_customer_id")
-    contact_name = known_buyer.get("contact_name") or known_buyer.get("erp_customer_name")
+    contact_name = select_contact_display_name(known_buyer.get("contact_name"), updated.get("buyer_name"))
     if contact_name:
         updated["buyer_name"] = contact_name
     if known_buyer.get("erp_customer_name"):
