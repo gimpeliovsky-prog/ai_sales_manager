@@ -13,3 +13,18 @@ def select_contact_display_name(contact_name: str | None, current_name: str | No
 
 def returning_customer_prefix(lang: str) -> str:
     return i18n_text("returning_customer.prefix", lang, {"customer_suffix": ""})
+
+
+def should_send_known_buyer_greeting(
+    *,
+    user_text: str | None,
+    buyer_identified: bool,
+    stage: str | None,
+    conversation_reopened: bool,
+) -> bool:
+    from app.conversation_boundary import is_short_greeting_message
+
+    if not buyer_identified or not is_short_greeting_message(user_text):
+        return False
+    normalized_stage = str(stage or "").strip().lower()
+    return conversation_reopened or normalized_stage in {"", "new", "identify"}

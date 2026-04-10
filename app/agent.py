@@ -42,7 +42,11 @@ from app.outbound_channels import mark_sales_owner_notification, notify_sales_ow
 from app.order_confirmation import message_completes_order_details
 from app.phone_numbers import normalize_phone as _normalize_phone
 from app.prompt_registry import build_runtime_system_prompt
-from app.greeting_policy import returning_customer_prefix as _returning_customer_prefix_text, select_contact_display_name
+from app.greeting_policy import (
+    returning_customer_prefix as _returning_customer_prefix_text,
+    select_contact_display_name,
+    should_send_known_buyer_greeting,
+)
 from app.runtime_availability_context import build_availability_prefetch_context, selected_item_code, should_prefetch_item_availability
 from app.runtime_catalog_context import build_catalog_prefetch_context, catalog_prefetch_search_term, should_prefetch_catalog_options
 from app.sales_dedupe import detect_duplicate_lead
@@ -1767,7 +1771,12 @@ async def _process_message_result_locked(
                 "source": "central_resolve",
             },
         )
-        if session.get("conversation_reopened") and is_short_greeting_message(user_text):
+        if should_send_known_buyer_greeting(
+            user_text=user_text,
+            buyer_identified=bool(session.get("erp_customer_id")),
+            stage=session.get("stage"),
+            conversation_reopened=bool(session.get("conversation_reopened")),
+        ):
             session["stage"] = "new"
             session["stage_confidence"] = 0.98
             session["behavior_class"] = "returning_customer"

@@ -19,6 +19,7 @@ CORE_POLICY: list[str] = [
     "If required data is missing, ask one focused follow-up question or hand off to a human.",
     "Never invent prices, discounts, stock levels, delivery promises, or policy exceptions.",
     "Do not claim that the catalog contains a product, family, or variant unless a catalog tool result in this conversation confirms it.",
+    "When the buyer is already recognized, greet them by the contact person's name only. Do not mention the internal customer/company name in greetings unless the customer explicitly asks for company verification.",
 ]
 
 LANGUAGE_POLICY: list[str] = [
