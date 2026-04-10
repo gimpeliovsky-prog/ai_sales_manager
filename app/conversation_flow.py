@@ -503,6 +503,30 @@ def classify_intent(text: str, ai_policy: dict[str, Any] | None = None) -> tuple
     return "low_signal", 0.5
 
 
+def classify_commercial_intent_fallback(text: str, ai_policy: dict[str, Any] | None = None) -> tuple[str, float]:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return "low_signal", 0.95
+    configured = _classify_with_overrides(
+        text=text,
+        normalized=normalized,
+        rules=_classification_config(ai_policy).get("intent_rules"),
+    )
+    if configured and configured[0] in {"find_product", "browse_catalog", "order_detail", "confirm_order", "add_to_order"}:
+        return configured
+    if _ADD_TO_ORDER_RE.search(normalized):
+        return "add_to_order", 0.88
+    if _ORDER_RE.search(normalized):
+        return "confirm_order", 0.82
+    if _QTY_RE.search(normalized):
+        return "order_detail", 0.7
+    if _EXPLORE_RE.search(normalized):
+        return "browse_catalog", 0.76
+    if _has_positive_product_evidence(normalized):
+        return "find_product", 0.68
+    return "low_signal", 0.5
+
+
 def classify_stage(
     *,
     session: dict[str, Any],

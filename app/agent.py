@@ -22,6 +22,7 @@ from app.conversation_flow import (
     advance_stage_after_tool,
     behavior_from_signal_classifier,
     classify_behavior,
+    classify_commercial_intent_fallback,
     classify_intent,
     derive_conversation_state,
     fallback_intent_can_override_llm,
@@ -2383,7 +2384,10 @@ async def _process_message_result_locked(
         )
 
     fallback_behavior_class, fallback_behavior_confidence = classify_behavior(user_text, session, ai_policy=ai_policy)
-    fallback_intent, fallback_intent_confidence = classify_intent(user_text, ai_policy=ai_policy)
+    if _signal_classifier_enabled(tenant) or _state_updater_enabled(tenant):
+        fallback_intent, fallback_intent_confidence = classify_commercial_intent_fallback(user_text, ai_policy=ai_policy)
+    else:
+        fallback_intent, fallback_intent_confidence = classify_intent(user_text, ai_policy=ai_policy)
     signal_mapped_behavior = (
         behavior_from_signal_classifier(
             signal_type=llm_signal_type_only,
