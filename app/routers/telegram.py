@@ -72,6 +72,31 @@ def _lead_management_config(tenant: dict) -> dict:
     return ai_policy.get("lead_management") if isinstance(ai_policy.get("lead_management"), dict) else {}
 
 
+def _seed_known_buyer_session(session: dict, known_buyer: dict, *, lang: str) -> dict:
+    updated = dict(session or {})
+    if known_buyer.get("erp_customer_id"):
+        updated["erp_customer_id"] = known_buyer.get("erp_customer_id")
+    contact_name = known_buyer.get("contact_name") or known_buyer.get("erp_customer_name")
+    if contact_name:
+        updated["buyer_name"] = contact_name
+    if known_buyer.get("erp_customer_name"):
+        updated["buyer_company_name"] = known_buyer.get("erp_customer_name")
+    if known_buyer.get("buyer_identity_id"):
+        updated["buyer_identity_id"] = known_buyer.get("buyer_identity_id")
+    if known_buyer.get("phone"):
+        updated["buyer_phone"] = known_buyer.get("phone")
+    if known_buyer.get("recognized_via"):
+        updated["buyer_recognized_via"] = known_buyer.get("recognized_via")
+    if known_buyer.get("recognition_status"):
+        updated["buyer_identity_status"] = known_buyer.get("recognition_status")
+    updated["buyer_review_required"] = bool(known_buyer.get("needs_review"))
+    updated["recent_sales_orders"] = known_buyer.get("recent_sales_orders") or []
+    updated["recent_sales_invoices"] = known_buyer.get("recent_sales_invoices") or []
+    updated["returning_customer_announced"] = True
+    updated["lang"] = lang
+    return updated
+
+
 async def _remember_sales_owner_chat_if_configured(tenant: dict, message: dict, chat_id: str) -> bool:
     lead_config = _lead_management_config(tenant)
     owner_username = normalize_telegram_username(lead_config.get("sales_owner_telegram_username"))
@@ -512,7 +537,18 @@ async def telegram_webhook(
     if text in ("/reset", "/новый"):
         await clear_session("telegram", chat_id)
         session = new_session(company_code=tenant.get("company_code"))
-        result = {"text": get_intro_message(greeting_lang), "documents": []}
+        known_buyer = await lc.find_buyer_by_telegram(tenant["company_code"], chat_id)
+        if known_buyer.get("found"):
+            session = _seed_known_buyer_session(session, known_buyer, lang=greeting_lang)
+            result = {
+                "text": get_known_buyer_greeting(
+                    greeting_lang,
+                    known_buyer.get("contact_name") or known_buyer.get("erp_customer_name"),
+                ),
+                "documents": [],
+            }
+        else:
+            result = {"text": get_intro_message(greeting_lang), "documents": []}
     elif _matches_debug_catalog_command(text):
         try:
             debug_text = await _debug_catalog_preview_text(
@@ -533,6 +569,7 @@ async def telegram_webhook(
     elif text == "/start":
         known_buyer = await lc.find_buyer_by_telegram(tenant["company_code"], chat_id)
         if known_buyer.get("found"):
+            session = _seed_known_buyer_session(session, known_buyer, lang=greeting_lang)
             result = {
                 "text": get_known_buyer_greeting(
                     greeting_lang,
