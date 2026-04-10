@@ -33,6 +33,16 @@ class ConversationLexiconTests(unittest.TestCase):
         self.assertEqual(behavior, "service_request")
         self.assertGreaterEqual(confidence, 0.9)
 
+    def test_explorer_behavior_is_derived_from_browse_intent(self) -> None:
+        behavior, confidence = classify_behavior("show me catalog options", session={})
+        self.assertEqual(behavior, "explorer")
+        self.assertGreaterEqual(confidence, 0.7)
+
+    def test_direct_buyer_behavior_is_derived_from_order_intent(self) -> None:
+        behavior, confidence = classify_behavior("I want to place an order", session={})
+        self.assertEqual(behavior, "direct_buyer")
+        self.assertGreaterEqual(confidence, 0.7)
+
     def test_contact_details_regex_matches_intro_or_phone(self) -> None:
         regex = contact_details_regex()
         self.assertIsNotNone(regex.search("my name is Peter"))
