@@ -17,6 +17,7 @@ from app.conversation_lexicon import (
     price_regex,
     service_regex,
 )
+from app.lead_lexicon import commercial_cue_regex, generic_product_tokens
 from app.i18n import text as i18n_text
 
 DEFAULT_STAGE = "discover"
@@ -198,6 +199,9 @@ _HUMAN_RE = re.compile(
     r"\b(manager\w*|human\w*|operator\w*|менедж\w*|оператор\w*|человек\w*|נציג|מנהל|موظف|مدير)\b",
     re.IGNORECASE,
 )
+_PRODUCT_TOKEN_RE = re.compile(r"[^\W\d_]+(?:[-'][^\W\d_]+)*", re.UNICODE)
+_COMMERCIAL_CUE_RE = commercial_cue_regex()
+_GENERIC_PRODUCT_TOKENS = generic_product_tokens()
 
 
 _CONTACT_DETAILS_RE = re.compile(
@@ -228,6 +232,36 @@ def looks_like_small_talk(text: str | None) -> bool:
     if not normalized:
         return False
     return bool(is_short_greeting_message(normalized) or _SMALL_TALK_RE.search(normalized))
+
+
+def _substantive_message_tokens(text: str | None) -> list[str]:
+    tokens = [token.casefold() for token in _PRODUCT_TOKEN_RE.findall(str(text or ""))]
+    return [token for token in tokens if token not in _GENERIC_PRODUCT_TOKENS and len(token) > 1]
+
+
+def _has_positive_product_evidence(text: str | None) -> bool:
+    normalized = _normalize_text(str(text or ""))
+    if not normalized or looks_like_small_talk(normalized):
+        return False
+    if any(
+        regex.search(normalized)
+        for regex in (
+            _SERVICE_RE,
+            _PRICE_RE,
+            _HUMAN_RE,
+            _CONTACT_DETAILS_RE,
+        )
+    ):
+        return False
+    substantive_tokens = _substantive_message_tokens(normalized)
+    if not substantive_tokens:
+        return False
+    if _COMMERCIAL_CUE_RE.search(normalized):
+        return True
+    if len(substantive_tokens) >= 2:
+        return True
+    raw_tokens = [token.casefold() for token in _PRODUCT_TOKEN_RE.findall(normalized)]
+    return len(substantive_tokens) == 1 and len(raw_tokens) == 1 and len(substantive_tokens[0]) >= 3
 
 
 def _lead_profile_dict(profile: Any) -> dict[str, Any]:
@@ -463,7 +497,9 @@ def classify_intent(text: str, ai_policy: dict[str, Any] | None = None) -> tuple
         return "order_detail", 0.7
     if _EXPLORE_RE.search(normalized):
         return "browse_catalog", 0.76
-    return "find_product", 0.52
+    if _has_positive_product_evidence(normalized):
+        return "find_product", 0.68
+    return "low_signal", 0.5
 
 
 def classify_stage(

@@ -113,6 +113,46 @@ class LeadManagementLayersTests(unittest.TestCase):
         self.assertIsNone(profile.get("product_interest"))
         self.assertIsNone(profile.get("need"))
 
+    def test_low_signal_social_phrase_does_not_update_product_slots(self) -> None:
+        profile = update_lead_profile_from_message(
+            current_profile={"status": "none"},
+            user_text="how are you going today",
+            stage="discover",
+            behavior_class="returning_customer",
+            intent="find_product",
+            customer_identified=True,
+            active_order_name=None,
+        )
+        self.assertIsNone(profile.get("product_interest"))
+        self.assertIsNone(profile.get("need"))
+        self.assertEqual(profile.get("next_action"), "ask_need")
+
+    def test_missing_slots_are_soft_priority_not_hard_contract(self) -> None:
+        profile = update_lead_profile_from_message(
+            current_profile={"status": "new_lead", "product_interest": "laptop"},
+            user_text="thanks",
+            stage="discover",
+            behavior_class="returning_customer",
+            intent="low_signal",
+            customer_identified=True,
+            active_order_name=None,
+        )
+        self.assertEqual(profile.get("missing_slots"), ["specific_item", "quantity", "uom"])
+        self.assertEqual(profile.get("next_action"), "show_matching_options")
+
+    def test_random_number_without_product_evidence_does_not_become_quantity(self) -> None:
+        profile = update_lead_profile_from_message(
+            current_profile={"status": "none"},
+            user_text="513320556",
+            stage="discover",
+            behavior_class="silent_or_low_signal",
+            intent="order_detail",
+            customer_identified=False,
+            active_order_name=None,
+        )
+        self.assertIsNone(profile.get("quantity"))
+        self.assertEqual(profile.get("next_action"), "ask_need")
+
 
 if __name__ == "__main__":
     unittest.main()

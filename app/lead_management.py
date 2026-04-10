@@ -73,6 +73,7 @@ LEAD_DEAL_FIELDS = {
 LEAD_PROGRESS_FIELDS = {
     "status",
     "next_action",
+    "missing_slots",
     "qualification_priority",
     "qualification_priority_reason",
     "product_resolution_status",
@@ -149,6 +150,7 @@ def empty_lead_profile() -> dict[str, Any]:
         "score": 0,
         "temperature": "cold",
         "next_action": "ask_need",
+        "missing_slots": ["product_interest"],
         "followup_strategy": "generic_stalled",
         "qualification_priority": "product_need",
         "qualification_priority_reason": None,
@@ -575,6 +577,76 @@ def _substantive_product_tokens(text: str | None) -> list[str]:
     return [token for token in tokens if token not in _GENERIC_PRODUCT_TOKENS and len(token) > 1]
 
 
+def _has_positive_product_evidence(
+    *,
+    user_text: str,
+    normalized_interest: str | None,
+    intent: str,
+    qty: float | None = None,
+    extracted_uom: str | None = None,
+    requested_items: list[dict[str, Any]] | None = None,
+) -> bool:
+    if requested_items:
+        return True
+    if not normalized_interest or looks_like_small_talk(user_text):
+        return False
+    substantive_tokens = _substantive_product_tokens(normalized_interest)
+    if not substantive_tokens:
+        return False
+    normalized_text = str(user_text or "").strip()
+    raw_tokens = _interest_tokens(normalized_text)
+    if _COMMERCIAL_CUE_RE.search(normalized_text):
+        return True
+    if intent == "browse_catalog":
+        return True
+    if qty is not None or extracted_uom:
+        return True
+    if len(substantive_tokens) >= 2:
+        return True
+    return len(substantive_tokens) == 1 and len(raw_tokens) == 1 and len(substantive_tokens[0]) >= 3
+
+
+def _allow_quantity_slot_update(
+    *,
+    profile: dict[str, Any],
+    qty: float | None,
+    requested_items: list[dict[str, Any]] | None,
+    active_order_name: str | None,
+    product_evidence: bool,
+) -> bool:
+    if qty is None:
+        return False
+    return bool(
+        requested_items
+        or active_order_name
+        or profile.get("product_interest")
+        or profile.get("catalog_item_code")
+        or profile.get("catalog_item_name")
+        or product_evidence
+    )
+
+
+def _allow_uom_slot_update(
+    *,
+    profile: dict[str, Any],
+    extracted_uom: str | None,
+    requested_items: list[dict[str, Any]] | None,
+    active_order_name: str | None,
+    product_evidence: bool,
+) -> bool:
+    if not extracted_uom:
+        return False
+    return bool(
+        requested_items
+        or active_order_name
+        or profile.get("product_interest")
+        or profile.get("catalog_item_code")
+        or profile.get("catalog_item_name")
+        or profile.get("quantity")
+        or product_evidence
+    )
+
+
 def _refines_interest(candidate: str | None, current_interest: str | None) -> bool:
     candidate_text = str(candidate or "").strip().casefold()
     current_text = str(current_interest or "").strip().casefold()
@@ -929,6 +1001,52 @@ def _status_for(*, stage: str, intent: str, profile: dict[str, Any], active_orde
     return "none"
 
 
+def _missing_slots_for(*, profile: dict[str, Any], status: str, stage: str, customer_identified: bool) -> list[str]:
+    missing: list[str] = []
+    if not profile.get("product_interest"):
+        missing.append("product_interest")
+        return missing
+    if _needs_specific_item_selection(profile):
+        missing.append("specific_item")
+    if not _has_quantity_detail(profile):
+        missing.append("quantity")
+    if not _has_unit_detail(profile):
+        missing.append("uom")
+    if stage in {"order_build", "confirm"} and not (profile.get("urgency") or profile.get("delivery_need")):
+        missing.append("delivery_need")
+    if not customer_identified:
+        missing.append("contact")
+    if status == "quote_needed":
+        missing.append("price_or_quote")
+    elif stage in {"order_build", "confirm"}:
+        missing.append("confirmation")
+    return missing
+
+
+def _next_action_for_missing_slot(*, missing_slot: str, stage: str, intent: str, profile: dict[str, Any]) -> str:
+    if missing_slot == "product_interest":
+        return "ask_need"
+    if missing_slot == "specific_item":
+        if intent == "browse_catalog" or (
+            stage in {"discover", "lead_capture"} and not _has_quantity_detail(profile) and not _has_unit_detail(profile)
+        ):
+            return "show_matching_options"
+        return "select_specific_item"
+    if missing_slot == "quantity":
+        return "ask_quantity"
+    if missing_slot == "uom":
+        return "ask_unit"
+    if missing_slot == "delivery_need":
+        return "ask_delivery_timing"
+    if missing_slot == "contact":
+        return "ask_contact"
+    if missing_slot == "price_or_quote":
+        return "quote_or_clarify_price"
+    if missing_slot == "confirmation":
+        return "confirm_order"
+    return "recommend_next_step"
+
+
 def _next_action_for(*, status: str, stage: str, intent: str, profile: dict[str, Any], customer_identified: bool) -> str:
     if status == "handoff":
         return "handoff_manager"
@@ -936,30 +1054,47 @@ def _next_action_for(*, status: str, stage: str, intent: str, profile: dict[str,
         return "send_order_or_offer_invoice"
     if status == "service":
         return "fulfill_service_request"
-    if not profile.get("product_interest"):
-        return "ask_need"
-    if _needs_specific_item_selection(profile):
-        if intent == "browse_catalog" or (
-            stage in {"discover", "lead_capture"} and not _has_quantity_detail(profile) and not _has_unit_detail(profile)
-        ):
-            return "show_matching_options"
-        return "select_specific_item"
-    if not _has_quantity_detail(profile):
-        return "ask_quantity"
-    if not _has_unit_detail(profile):
-        return "ask_unit"
-    if stage in {"order_build", "confirm"} and not (profile.get("urgency") or profile.get("delivery_need")):
-        return "ask_delivery_timing"
-    if not customer_identified:
-        return "ask_contact"
-    if status == "quote_needed":
-        return "quote_or_clarify_price"
-    if stage in {"order_build", "confirm"}:
-        return "confirm_order"
+    missing_slots = _missing_slots_for(
+        profile=profile,
+        status=status,
+        stage=stage,
+        customer_identified=customer_identified,
+    )
+    if missing_slots:
+        return _next_action_for_missing_slot(
+            missing_slot=missing_slots[0],
+            stage=stage,
+            intent=intent,
+            profile=profile,
+        )
     return "recommend_next_step"
 
 
 def _qualification_priority_for(*, status: str, stage: str, profile: dict[str, Any], customer_identified: bool) -> tuple[str, str]:
+    missing_slots = _missing_slots_for(
+        profile=profile,
+        status=status,
+        stage=stage,
+        customer_identified=customer_identified,
+    )
+    if missing_slots:
+        first_missing = missing_slots[0]
+        if first_missing == "product_interest":
+            return "product_need", "Clarify what the customer wants before asking for commercial parameters."
+        if first_missing == "specific_item":
+            return "specific_item_selection", "When the customer named only a broad category, first resolve the exact catalog item or show matching options before collecting more commercial parameters."
+        if first_missing == "quantity":
+            return "quantity", "After the product is known, quantity is the next most important sales qualification detail."
+        if first_missing == "uom":
+            return "unit_or_variant", "After quantity, clarify unit, package, or variant so price and order details are meaningful."
+        if first_missing == "delivery_need":
+            return "timing_or_delivery", "Before final order confirmation, clarify timing or delivery needs when they are still missing."
+        if first_missing == "contact":
+            return "contact", "Ask for contact only after product and core order parameters are clear."
+        if first_missing == "price_or_quote":
+            return "price_or_quote", "With product, quantity, and unit known, continue with price or quote handling."
+        if first_missing == "confirmation":
+            return "confirmation", "Core details are known, so the next priority is explicit confirmation."
     if not profile.get("product_interest"):
         return "product_need", "Clarify what the customer wants before asking for commercial parameters."
     if _needs_specific_item_selection(profile):
@@ -1085,6 +1220,12 @@ def _finalize_profile_update(
         intent=intent,
     )
     profile["temperature"] = _temperature(int(profile["score"]))
+    profile["missing_slots"] = _missing_slots_for(
+        profile=profile,
+        status=status,
+        stage=stage,
+        customer_identified=customer_identified,
+    )
     profile["next_action"] = _next_action_for(
         status=status,
         stage=stage,
@@ -1214,6 +1355,14 @@ def _apply_message_signal_effects(
         and not separate_order_requested
     )
     product_resolution_intent = "add_to_order" if correction_requested and intent in {"service_request", "low_signal", "order_detail"} else intent
+    product_evidence = _has_positive_product_evidence(
+        user_text=semantic_text,
+        normalized_interest=explicit_single_item_interest,
+        intent=product_resolution_intent,
+        qty=qty,
+        extracted_uom=extracted_uom,
+        requested_items=requested_items,
+    )
 
     if requested_items:
         assumed_uom = multi_item_default_uom(lead_config)
@@ -1241,7 +1390,7 @@ def _apply_message_signal_effects(
         extracted_uom=extracted_uom,
         qty=qty,
         config=lead_config,
-    ):
+    ) and product_evidence:
         normalized_interest = _normalize_single_item_interest(normalized_text, lead_config)
         previous_interest = _clean_text(profile.get("product_interest"))
         if previous_interest and normalized_interest and not _same_interest(normalized_interest, previous_interest):
@@ -1264,9 +1413,21 @@ def _apply_message_signal_effects(
     elif correction_requested:
         profile["separate_order_requested"] = False
 
-    if qty is not None and not requested_items:
+    if _allow_quantity_slot_update(
+        profile=profile,
+        qty=qty,
+        requested_items=requested_items,
+        active_order_name=active_order_name,
+        product_evidence=product_evidence,
+    ) and not requested_items:
         profile["quantity"] = qty
-    if extracted_uom and not requested_items:
+    if _allow_uom_slot_update(
+        profile=profile,
+        extracted_uom=extracted_uom,
+        requested_items=requested_items,
+        active_order_name=active_order_name,
+        product_evidence=product_evidence,
+    ) and not requested_items:
         profile["uom"] = extracted_uom
     if (
         correction_requested

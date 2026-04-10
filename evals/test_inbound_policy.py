@@ -83,6 +83,15 @@ class InboundPolicyTests(unittest.TestCase):
         self.assertEqual(intent, "small_talk")
         self.assertGreaterEqual(confidence, 0.9)
 
+    def test_unknown_social_text_never_becomes_product_intent(self) -> None:
+        intent, _ = classify_intent("how are you going today")
+        self.assertIn(intent, {"small_talk", "low_signal"})
+
+    def test_bare_product_phrase_still_classifies_as_find_product(self) -> None:
+        intent, confidence = classify_intent("laptop")
+        self.assertEqual(intent, "find_product")
+        self.assertGreaterEqual(confidence, 0.6)
+
     def test_small_talk_does_not_reset_existing_order_stage(self) -> None:
         stage, _ = classify_stage(
             session={"stage": "invoice"},
