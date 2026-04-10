@@ -7,6 +7,7 @@ from typing import Any
 import redis.asyncio as aioredis
 
 from app.config import get_settings
+from app.conversation_contexts import ensure_session_contexts, sync_legacy_to_active_context
 from app.conversation_boundary import reset_session_for_new_dialogue
 from app.lead_management import normalize_telegram_username
 
@@ -212,7 +213,7 @@ def _empty_session() -> dict[str, Any]:
 def new_session(*, company_code: str | None = None) -> dict[str, Any]:
     session = _empty_session()
     session["company_code"] = company_code
-    return session
+    return ensure_session_contexts(session)
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -245,7 +246,7 @@ def _cleanup_session(session: dict[str, Any]) -> dict[str, Any]:
         session["pending_confirmation_text"] = None
         session["pending_confirmation_set_at"] = None
 
-    return session
+    return ensure_session_contexts(session)
 
 
 async def load_session(channel: str, uid: str) -> dict[str, Any]:
@@ -266,6 +267,7 @@ async def load_session(channel: str, uid: str) -> dict[str, Any]:
 async def save_session(channel: str, uid: str, session: dict[str, Any]) -> None:
     settings = get_settings()
     now_iso = datetime.now(UTC).isoformat()
+    sync_legacy_to_active_context(session)
     session["messages"] = session.get("messages", [])[-40:]
     session["last_interaction_at"] = now_iso
     session["conversation_reopened"] = False
@@ -298,6 +300,7 @@ async def _save_lead_index(channel: str, uid: str, session: dict[str, Any], ttl_
 
 async def save_session_snapshot(channel: str, uid: str, session: dict[str, Any]) -> None:
     settings = get_settings()
+    sync_legacy_to_active_context(session)
     key = _key(channel, uid)
     ttl = await _client().ttl(key)
     if ttl is None or ttl <= 0:
