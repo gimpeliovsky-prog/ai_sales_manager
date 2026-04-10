@@ -60,6 +60,14 @@ _BUYER_COMPANY_AMBIGUOUS = {
 }
 
 
+_BUYER_COMPANY_LOOKUP_ERROR = {
+    "en": "I couldn't verify the company right now because of a temporary error. Please send the official company name or number again in a moment.",
+    "ru": "Сейчас не получилось проверить компанию из-за временной ошибки. Через минуту отправьте ещё раз официальное название компании или её номер.",
+    "he": "לא הצלחתי לאמת עכשיו את החברה בגלל שגיאה זמנית. שלח שוב בעוד רגע את השם הרשמי של החברה או את מספר החברה.",
+    "ar": "لم أتمكن من التحقق من الشركة الآن بسبب خطأ مؤقت. أرسل بعد قليل الاسم الرسمي للشركة أو رقمها مرة أخرى.",
+}
+
+
 def clean_company_candidate(text: str) -> str | None:
     candidate = re.sub(r"\s+", " ", str(text or "")).strip(" ,.;:-")
     if not candidate:
@@ -117,3 +125,7 @@ def buyer_company_ambiguous_message(lang: str, options: list[str]) -> str:
     template = _BUYER_COMPANY_AMBIGUOUS.get(lang, _BUYER_COMPANY_AMBIGUOUS["en"])
     rendered = "\n".join(str(option or "").strip() for option in options if str(option or "").strip())
     return template.format(options=rendered)
+
+
+def buyer_company_lookup_error_message(lang: str) -> str:
+    return _BUYER_COMPANY_LOOKUP_ERROR.get(lang, _BUYER_COMPANY_LOOKUP_ERROR["en"])

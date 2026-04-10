@@ -604,14 +604,19 @@ async def telegram_webhook(
                 "documents": [],
             }
     else:
-        result = await process_message_result(
-            channel="telegram",
-            channel_uid=chat_id,
-            user_text=text,
-            tenant=tenant,
-            channel_context={"telegram_bot_token": bot_token},
-        )
-        session = await load_session("telegram", chat_id)
+        try:
+            result = await process_message_result(
+                channel="telegram",
+                channel_uid=chat_id,
+                user_text=text,
+                tenant=tenant,
+                channel_context={"telegram_bot_token": bot_token},
+            )
+            session = await load_session("telegram", chat_id)
+        except Exception:
+            logger.exception("Telegram message processing failed")
+            result = {"text": _temporary_error_text(greeting_lang), "documents": []}
+            session = await load_session("telegram", chat_id)
 
     async with httpx.AsyncClient() as client:
         has_sales_order_pdf = False

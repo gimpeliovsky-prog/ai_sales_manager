@@ -10,6 +10,7 @@ import httpx
 from app.buyer_resolver import resolve_buyer, resolve_buyer_from_intro
 from app.buyer_intake import (
     buyer_company_ambiguous_message as _buyer_company_ambiguous_message_text,
+    buyer_company_lookup_error_message as _buyer_company_lookup_error_message_text,
     buyer_company_request_message as _buyer_company_request_message_text,
     buyer_company_retry_message as _buyer_company_retry_message_text,
     buyer_identity_review_message as _buyer_identity_review_message_text,
@@ -650,6 +651,10 @@ def _buyer_company_retry_message(lang: str) -> str:
 
 def _buyer_company_ambiguous_message(lang: str, options: list[str]) -> str:
     return _buyer_company_ambiguous_message_text(lang, options)
+
+
+def _buyer_company_lookup_error_message(lang: str) -> str:
+    return _buyer_company_lookup_error_message_text(lang)
 
 
 def _normalize_buyer_language_code(value: str | None) -> str | None:
@@ -1826,14 +1831,37 @@ async def _process_message_result_locked(
                 message_type="buyer_company_request",
                 payload={"buyer_name": session.get("buyer_name"), "buyer_phone": session.get("buyer_phone")},
             )
-        company_resolution = await lc.identify_buyer_company(
-            company_code,
-            channel_type=channel,
-            channel_user_id=channel_uid,
-            full_name=str(session.get("buyer_name") or "").strip(),
-            phone=session.get("buyer_phone"),
-            company_query=company_name,
-        )
+        try:
+            company_resolution = await lc.identify_buyer_company(
+                company_code,
+                channel_type=channel,
+                channel_user_id=channel_uid,
+                full_name=str(session.get("buyer_name") or "").strip(),
+                phone=session.get("buyer_phone"),
+                company_query=company_name,
+            )
+        except Exception as exc:
+            logger.exception("Buyer company identification failed for %s/%s: %s", channel, channel_uid, exc)
+            session["stage"] = "identify"
+            session["stage_confidence"] = 0.98
+            reply = _buyer_company_lookup_error_message(current_lang)
+            return await _finalize_intake_reply(
+                lc=lc,
+                company_code=company_code,
+                channel=channel,
+                channel_uid=channel_uid,
+                session=session,
+                user_text=user_text,
+                reply=reply,
+                result=result,
+                message_type="buyer_company_request",
+                payload={
+                    "buyer_name": session.get("buyer_name"),
+                    "buyer_phone": session.get("buyer_phone"),
+                    "company_query": company_name,
+                    "lookup_error": type(exc).__name__,
+                },
+            )
         match_status = str(company_resolution.get("match_status") or "none").strip() or "none"
         if match_status == "ambiguous":
             candidates = company_resolution.get("candidates") or []
