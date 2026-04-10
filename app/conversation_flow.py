@@ -292,12 +292,12 @@ def _derive_stage_from_state(
         return "service", 0.95
     if signal_type in {"price_objection", "discount_request", "analogs_request", "comparison_request", "delivery_question", "availability_question", "frustration", "stalling", "resume_previous_context"} and previous_stage in STAGE_PROMPTS:
         return previous_stage, 0.87
-    if signal_type == "topic_shift":
-        return "discover", 0.91
     if separate_order_requested:
         if next_action in {"ask_quantity", "ask_unit", "ask_delivery_timing", "confirm_order"} or lead_profile.get("product_interest"):
             return "order_build", 0.92
         return "discover", 0.84
+    if signal_type == "topic_shift":
+        return "discover", 0.91
     if status in {"order_created", "won"}:
         return ("closed", 0.93) if previous_stage == "closed" else ("invoice", 0.93)
     if status == "handoff":
