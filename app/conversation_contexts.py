@@ -351,6 +351,33 @@ def context_events(session: dict[str, Any]) -> list[dict[str, Any]]:
     return list(_context_events(session))
 
 
+def context_summaries(session: dict[str, Any]) -> list[dict[str, Any]]:
+    ensure_session_contexts(session)
+    summaries: list[dict[str, Any]] = []
+    active_id = _active_context_id(session)
+    for context_id, candidate in session["contexts"].items():
+        if not isinstance(candidate, dict):
+            continue
+        lead_profile = normalize_lead_profile(candidate.get("lead_profile"))
+        signal_state = candidate.get("signal_state") if isinstance(candidate.get("signal_state"), dict) else {}
+        summaries.append(
+            {
+                "context_id": context_id,
+                "context_type": str(candidate.get("context_type") or DEFAULT_CONTEXT_TYPE).strip() or DEFAULT_CONTEXT_TYPE,
+                "status": str(candidate.get("status") or "open").strip() or "open",
+                "title": candidate.get("title"),
+                "related_order_id": str(candidate.get("related_order_id") or "").strip() or None,
+                "product_interest": _product_interest(lead_profile),
+                "next_action": lead_profile.get("next_action"),
+                "signal_type": str(signal_state.get("type") or "").strip() or None,
+                "updated_at": candidate.get("updated_at"),
+                "is_active": context_id == active_id,
+            }
+        )
+    summaries.sort(key=lambda item: (not bool(item.get("is_active")), str(item.get("updated_at") or "")), reverse=False)
+    return summaries
+
+
 def active_deal_state(session: dict[str, Any]) -> dict[str, Any]:
     context = active_context(session)
     value = context.get("deal_state")

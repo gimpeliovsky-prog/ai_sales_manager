@@ -12,6 +12,7 @@ from app.conversation_contexts import (
     active_progress_state,
     active_related_order_id,
     active_signal_state,
+    context_summaries,
     context_events,
 )
 from app.lead_management import normalize_lead_profile
@@ -72,6 +73,7 @@ def lead_snapshot(*, channel: str, uid: str, session: dict[str, Any]) -> dict[st
     progress_state = active_progress_state(session)
     signal_state = active_signal_state(session)
     event_log = context_events(session)
+    timeline = session.get("lead_timeline") if isinstance(session.get("lead_timeline"), list) else []
     return {
         "session_id": f"{channel}:{uid}",
         "channel": channel,
@@ -178,9 +180,18 @@ def lead_snapshot(*, channel: str, uid: str, session: dict[str, Any]) -> dict[st
         "active_context_id": active_ctx.get("context_id"),
         "active_context_type": active_context_type(session),
         "active_context_title": active_ctx.get("title"),
+        "active_context_status": active_ctx.get("status"),
+        "active_context_related_order_id": active_ctx.get("related_order_id"),
+        "deal_state": deal_state,
+        "progress_state": progress_state,
+        "signal_state": signal_state,
+        "contexts": context_summaries(session),
+        "open_context_ids": session.get("open_context_ids") if isinstance(session.get("open_context_ids"), list) else [],
         "signal_type": signal_state.get("type") or session.get("signal_type"),
         "signal_emotion": signal_state.get("emotion") or session.get("signal_emotion"),
         "context_event_count": len(event_log),
+        "context_events": event_log[-20:],
+        "domain_event_count": len(timeline),
         "last_interaction_at": session.get("last_interaction_at"),
         "last_message_preview": _message_preview(session),
         "conversation_quality_score": session.get("conversation_quality_score"),

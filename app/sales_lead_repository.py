@@ -5,7 +5,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from app.conversation_contexts import active_lead_profile
+from app.conversation_contexts import active_context, active_lead_profile, context_events, context_summaries
 from app.sales_reporting import lead_snapshot
 
 logger = logging.getLogger(__name__)
@@ -170,9 +170,16 @@ def _compact_session_context(session: dict[str, Any]) -> dict[str, Any]:
         "buyer_identity_id": session.get("buyer_identity_id"),
         "erp_customer_id": session.get("erp_customer_id"),
         "last_sales_order_name": session.get("last_sales_order_name"),
+        "active_context_id": session.get("active_context_id"),
+        "open_context_ids": session.get("open_context_ids") if isinstance(session.get("open_context_ids"), list) else [],
         "stage": session.get("stage"),
         "behavior_class": session.get("behavior_class"),
         "last_intent": session.get("last_intent"),
+        "signal_type": session.get("signal_type"),
+        "signal_emotion": session.get("signal_emotion"),
+        "contexts_summary": context_summaries(session),
+        "contexts": session.get("contexts") if isinstance(session.get("contexts"), dict) else {},
+        "context_events": context_events(session),
         "last_interaction_at": session.get("last_interaction_at"),
         "conversation_quality_score": session.get("conversation_quality_score"),
         "quality_flags": session.get("quality_flags") if isinstance(session.get("quality_flags"), list) else [],
@@ -191,8 +198,9 @@ def compact_lead_record(*, channel: str, uid: str, session: dict[str, Any]) -> d
     timeline = session.get("lead_timeline") if isinstance(session.get("lead_timeline"), list) else []
     snapshot = lead_snapshot(channel=channel, uid=uid, session=session)
     updated_at = str(session.get("last_interaction_at") or profile.get("last_updated_at") or datetime.now(UTC).isoformat())
+    active_ctx = active_context(session)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "lead_id": lead_id,
         "company_code": company_code,
         "session_id": f"{channel}:{uid}",
@@ -202,8 +210,34 @@ def compact_lead_record(*, channel: str, uid: str, session: dict[str, Any]) -> d
         "lead": snapshot,
         "lead_profile": profile,
         "session_context": _compact_session_context(session),
+        "active_context": {
+            "context_id": active_ctx.get("context_id"),
+            "context_type": active_ctx.get("context_type"),
+            "status": active_ctx.get("status"),
+            "title": active_ctx.get("title"),
+            "related_order_id": active_ctx.get("related_order_id"),
+        },
+        "contexts": session.get("contexts") if isinstance(session.get("contexts"), dict) else {},
+        "context_events": context_events(session),
         "timeline": timeline[-_timeline_limit():],
     }
+
+
+def restore_session_from_record(record: dict[str, Any]) -> dict[str, Any]:
+    session = dict(record.get("session_context") if isinstance(record.get("session_context"), dict) else {})
+    session["lead_profile"] = record.get("lead_profile") if isinstance(record.get("lead_profile"), dict) else {}
+    session["lead_timeline"] = record.get("timeline") if isinstance(record.get("timeline"), list) else []
+    if isinstance(record.get("contexts"), dict):
+        session["contexts"] = record.get("contexts")
+    elif isinstance(session.get("contexts"), dict):
+        session["contexts"] = session.get("contexts")
+    if isinstance(record.get("context_events"), list):
+        session["context_events"] = record.get("context_events")
+    elif isinstance(session.get("context_events"), list):
+        session["context_events"] = session.get("context_events")
+    if record.get("active_context", {}).get("context_id"):
+        session["active_context_id"] = record["active_context"]["context_id"]
+    return session
 
 
 def _crm_event_from_record(record: dict[str, Any], event_type: str) -> dict[str, Any]:
@@ -976,8 +1010,21 @@ class PostgresSalesLeadRepository:
         profile = _json_value(data.get("lead_profile"), {})
         context = _json_value(data.get("session_context"), {})
         timeline = _json_value(data.get("timeline"), [])
+        active_context_id = context.get("active_context_id") if isinstance(context, dict) else None
+        contexts = context.get("contexts") if isinstance(context, dict) and isinstance(context.get("contexts"), dict) else {}
+        active_context = None
+        if active_context_id and isinstance(contexts, dict):
+            candidate = contexts.get(str(active_context_id))
+            if isinstance(candidate, dict):
+                active_context = {
+                    "context_id": candidate.get("context_id") or active_context_id,
+                    "context_type": candidate.get("context_type"),
+                    "status": candidate.get("status"),
+                    "title": candidate.get("title"),
+                    "related_order_id": candidate.get("related_order_id"),
+                }
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "lead_id": data.get("lead_id"),
             "company_code": data.get("company_code"),
             "session_id": data.get("session_id"),
@@ -987,6 +1034,9 @@ class PostgresSalesLeadRepository:
             "lead": lead if isinstance(lead, dict) else {},
             "lead_profile": profile if isinstance(profile, dict) else {},
             "session_context": context if isinstance(context, dict) else {},
+            "active_context": active_context,
+            "contexts": contexts if isinstance(contexts, dict) else {},
+            "context_events": context.get("context_events") if isinstance(context, dict) and isinstance(context.get("context_events"), list) else [],
             "timeline": timeline if isinstance(timeline, list) else [],
         }
 

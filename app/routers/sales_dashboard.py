@@ -9,7 +9,7 @@ from app.config import get_settings
 from app.conversation_contexts import active_lead_profile, set_active_lead_profile
 from app.lead_management import apply_lead_merge, apply_manual_close, apply_order_correction_update, apply_quote_update, record_merged_duplicate
 from app.sales_quality import update_session_quality
-from app.sales_lead_repository import get_sales_lead_repository
+from app.sales_lead_repository import compact_lead_record, get_sales_lead_repository, restore_session_from_record
 from app.sales_reporting import (
     crm_export_contract,
     crm_export_from_lead,
@@ -269,9 +269,9 @@ def _update_persisted_lead_record(
     actor_id: str | None,
     now_iso: str,
 ) -> dict[str, Any]:
-    session = dict(record.get("session_context") if isinstance(record.get("session_context"), dict) else {})
+    session = restore_session_from_record(record)
     set_active_lead_profile(session, profile)
-    session["lead_timeline"] = record.get("timeline") if isinstance(record.get("timeline"), list) else []
+    session["last_interaction_at"] = now_iso
     append_lead_timeline_event(
         session,
         event_type=f"lead_manually_closed_{profile.get('status')}",
@@ -287,33 +287,10 @@ def _update_persisted_lead_record(
         },
         actor=actor_id,
     )
-
-    lead = dict(record.get("lead") if isinstance(record.get("lead"), dict) else {})
-    for key in [
-        "status",
-        "lost_reason",
-        "next_action",
-        "followup_strategy",
-        "quote_status",
-        "quote_accepted_at",
-        "quote_rejected_at",
-        "order_total",
-        "currency",
-        "won_revenue",
-        "manual_close_actor_id",
-        "manual_closed_at",
-        "manual_close_comment",
-        "do_not_contact",
-        "do_not_contact_reason",
-        "won_at",
-        "lost_at",
-    ]:
-        lead[key] = profile.get(key)
-    lead["last_interaction_at"] = lead.get("last_interaction_at") or session.get("last_interaction_at")
-    record["lead"] = lead
-    record["lead_profile"] = profile
-    record["session_context"] = {key: value for key, value in session.items() if key not in {"lead_profile", "lead_timeline"}}
-    record["timeline"] = session.get("lead_timeline") if isinstance(session.get("lead_timeline"), list) else []
+    compacted = compact_lead_record(channel=str(record.get("channel") or ""), uid=str(record.get("channel_uid") or ""), session=session)
+    if isinstance(compacted, dict):
+        compacted["updated_at"] = now_iso
+        return compacted
     record["updated_at"] = now_iso
     return record
 
@@ -327,9 +304,9 @@ def _update_persisted_quote_record(
     quote_status: str,
     now_iso: str,
 ) -> dict[str, Any]:
-    session = dict(record.get("session_context") if isinstance(record.get("session_context"), dict) else {})
+    session = restore_session_from_record(record)
     set_active_lead_profile(session, profile)
-    session["lead_timeline"] = record.get("timeline") if isinstance(record.get("timeline"), list) else []
+    session["last_interaction_at"] = now_iso
     append_lead_timeline_event(
         session,
         event_type=f"quote_{quote_status}",
@@ -345,35 +322,10 @@ def _update_persisted_quote_record(
         },
         actor=actor_id,
     )
-
-    lead = dict(record.get("lead") if isinstance(record.get("lead"), dict) else {})
-    for key in [
-        "status",
-        "next_action",
-        "followup_strategy",
-        "quote_status",
-        "quote_id",
-        "quote_total",
-        "quote_currency",
-        "quote_pdf_url",
-        "quote_prepared_at",
-        "quote_sent_at",
-        "quote_accepted_at",
-        "quote_rejected_at",
-        "quote_last_actor_id",
-        "quote_last_updated_at",
-        "expected_revenue",
-        "lost_reason",
-        "do_not_contact",
-        "do_not_contact_reason",
-        "order_ready_at",
-        "lost_at",
-    ]:
-        lead[key] = profile.get(key)
-    record["lead"] = lead
-    record["lead_profile"] = profile
-    record["session_context"] = {key: value for key, value in session.items() if key not in {"lead_profile", "lead_timeline"}}
-    record["timeline"] = session.get("lead_timeline") if isinstance(session.get("lead_timeline"), list) else []
+    compacted = compact_lead_record(channel=str(record.get("channel") or ""), uid=str(record.get("channel_uid") or ""), session=session)
+    if isinstance(compacted, dict):
+        compacted["updated_at"] = now_iso
+        return compacted
     record["updated_at"] = now_iso
     return record
 
@@ -401,15 +353,16 @@ async def _update_quote_status(
             quote_pdf_url=data.get("quote_pdf_url") or data.get("pdf_url"),
             comment=data.get("comment"),
         ))
+        profile = active_lead_profile(session)
         append_lead_timeline_event(
             session,
             event_type=f"quote_{quote_status}",
             payload={
-                "quote_status": session["lead_profile"].get("quote_status"),
-                "quote_id": session["lead_profile"].get("quote_id"),
-                "quote_total": session["lead_profile"].get("quote_total"),
-                "quote_currency": session["lead_profile"].get("quote_currency"),
-                "quote_pdf_url": session["lead_profile"].get("quote_pdf_url"),
+                "quote_status": profile.get("quote_status"),
+                "quote_id": profile.get("quote_id"),
+                "quote_total": profile.get("quote_total"),
+                "quote_currency": profile.get("quote_currency"),
+                "quote_pdf_url": profile.get("quote_pdf_url"),
                 "comment": data.get("comment"),
                 "actor_id": actor_id,
                 "source": "sales_dashboard",
@@ -420,8 +373,8 @@ async def _update_quote_status(
         return {
             "lead_id": lead_id,
             "session_id": f"{channel}:{uid}",
-            "quote_status": session["lead_profile"].get("quote_status"),
-            "status": session["lead_profile"].get("status"),
+            "quote_status": profile.get("quote_status"),
+            "status": profile.get("status"),
             "source": "active_session",
             "lead": lead_snapshot(channel=channel, uid=uid, session=session),
         }
@@ -468,16 +421,14 @@ def _update_persisted_profile_record(
     actor_id: str | None,
     now_iso: str,
 ) -> dict[str, Any]:
-    session = dict(record.get("session_context") if isinstance(record.get("session_context"), dict) else {})
+    session = restore_session_from_record(record)
     set_active_lead_profile(session, profile)
-    session["lead_timeline"] = record.get("timeline") if isinstance(record.get("timeline"), list) else []
+    session["last_interaction_at"] = now_iso
     append_lead_timeline_event(session, event_type=event_type, payload=payload, actor=actor_id)
-    lead = dict(record.get("lead") if isinstance(record.get("lead"), dict) else {})
-    lead.update(profile)
-    record["lead"] = lead
-    record["lead_profile"] = profile
-    record["session_context"] = {key: value for key, value in session.items() if key not in {"lead_profile", "lead_timeline"}}
-    record["timeline"] = session.get("lead_timeline") if isinstance(session.get("lead_timeline"), list) else []
+    compacted = compact_lead_record(channel=str(record.get("channel") or ""), uid=str(record.get("channel_uid") or ""), session=session)
+    if isinstance(compacted, dict):
+        compacted["updated_at"] = now_iso
+        return compacted
     record["updated_at"] = now_iso
     return record
 
@@ -511,12 +462,13 @@ async def _update_order_correction(
             actor_id=actor_id,
             comment=data.get("comment"),
         ))
+        profile = active_lead_profile(session)
         append_lead_timeline_event(session, event_type=f"order_correction_{correction_status}", payload=event_payload, actor=actor_id)
         await save_session_snapshot(channel, uid, session)
         return {
             "lead_id": lead_id,
             "session_id": f"{channel}:{uid}",
-            "order_correction_status": session["lead_profile"].get("order_correction_status"),
+            "order_correction_status": profile.get("order_correction_status"),
             "source": "active_session",
             "lead": lead_snapshot(channel=channel, uid=uid, session=session),
         }
@@ -578,17 +530,18 @@ async def manually_close_lead(
             won_revenue=data.get("won_revenue"),
             currency=data.get("currency"),
         ))
+        profile = active_lead_profile(session)
         append_lead_timeline_event(
             session,
             event_type=f"lead_manually_closed_{outcome}",
             payload={
                 "outcome": outcome,
-                "lost_reason": session["lead_profile"].get("lost_reason"),
+                "lost_reason": profile.get("lost_reason"),
                 "comment": data.get("comment"),
                 "actor_id": actor_id,
-                "order_total": session["lead_profile"].get("order_total"),
-                "won_revenue": session["lead_profile"].get("won_revenue"),
-                "currency": session["lead_profile"].get("currency"),
+                "order_total": profile.get("order_total"),
+                "won_revenue": profile.get("won_revenue"),
+                "currency": profile.get("currency"),
                 "source": "sales_dashboard",
             },
             actor=actor_id,
@@ -597,8 +550,8 @@ async def manually_close_lead(
         return {
             "lead_id": lead_id,
             "session_id": f"{channel}:{uid}",
-            "status": session["lead_profile"].get("status"),
-            "lost_reason": session["lead_profile"].get("lost_reason"),
+            "status": profile.get("status"),
+            "lost_reason": profile.get("lost_reason"),
             "source": "active_session",
             "lead": lead_snapshot(channel=channel, uid=uid, session=session),
         }
