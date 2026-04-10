@@ -16,6 +16,25 @@ ALLOWED_INTENTS = {
     "human_handoff",
 }
 
+ALLOWED_SIGNAL_TYPES = {
+    "deal_progress",
+    "small_talk",
+    "price_objection",
+    "topic_shift",
+    "frustration",
+    "confirmation",
+    "service_request",
+    "low_signal",
+    "handoff_request",
+}
+
+ALLOWED_SIGNAL_EMOTIONS = {
+    "neutral",
+    "positive",
+    "impatient",
+    "skeptical",
+}
+
 ALLOWED_BEHAVIOR_CLASSES = {
     "direct_buyer",
     "explorer",
@@ -82,6 +101,9 @@ def parse_llm_state_update(text: str) -> dict[str, Any]:
     except (TypeError, ValueError):
         confidence = 0.0
     next_action = str(payload.get("next_action") or "").strip()
+    signal_type = str(payload.get("signal_type") or "").strip()
+    signal_emotion = str(payload.get("signal_emotion") or "").strip()
+    preserves_deal = payload.get("signal_preserves_deal")
     lead_patch = payload.get("lead_patch") if isinstance(payload.get("lead_patch"), dict) else {}
 
     sanitized_patch: dict[str, Any] = {}
@@ -111,12 +133,20 @@ def parse_llm_state_update(text: str) -> dict[str, Any]:
         behavior_class = ""
     if next_action not in ALLOWED_NEXT_ACTIONS:
         next_action = ""
+    if signal_type not in ALLOWED_SIGNAL_TYPES:
+        signal_type = ""
+    if signal_emotion not in ALLOWED_SIGNAL_EMOTIONS:
+        signal_emotion = ""
+    preserves_deal = bool(preserves_deal) if isinstance(preserves_deal, bool) else None
 
     return {
-        "valid": bool(intent or behavior_class or sanitized_patch or next_action),
+        "valid": bool(intent or behavior_class or sanitized_patch or next_action or signal_type),
         "intent": intent or None,
         "behavior_class": behavior_class or None,
         "next_action": next_action or None,
+        "signal_type": signal_type or None,
+        "signal_emotion": signal_emotion or None,
+        "signal_preserves_deal": preserves_deal,
         "confidence": max(0.0, min(1.0, confidence)),
         "lead_patch": sanitized_patch,
         "reason": _clean_text(payload.get("reason")),

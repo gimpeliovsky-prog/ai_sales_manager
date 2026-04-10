@@ -40,6 +40,70 @@ _QUOTE_FIELDS = {
     "quote_last_comment",
     "quote_last_updated_at",
 }
+_DEAL_FIELDS = {
+    "product_interest",
+    "catalog_item_code",
+    "catalog_item_name",
+    "quantity",
+    "uom",
+    "requested_items",
+    "requested_item_count",
+    "requested_items_have_quantities",
+    "requested_items_need_uom_confirmation",
+    "requested_items_assumed_uom",
+    "requested_items_uom_assumption_status",
+    "urgency",
+    "delivery_need",
+    "price_sensitivity",
+    "decision_status",
+    "target_order_id",
+    "active_order_state",
+    "active_order_can_modify",
+    "active_order_checked_at",
+    "quote_currency",
+    "quote_total",
+    "quote_id",
+    "quote_pdf_url",
+    "order_total",
+    "currency",
+}
+_PROGRESS_FIELDS = {
+    "status",
+    "next_action",
+    "qualification_priority",
+    "qualification_priority_reason",
+    "product_resolution_status",
+    "catalog_candidate_count",
+    "catalog_lookup_query",
+    "catalog_lookup_status",
+    "catalog_lookup_match_count",
+    "catalog_lookup_at",
+    "availability_item_code",
+    "availability_item_name",
+    "availability_in_stock",
+    "availability_total_available_qty",
+    "availability_stock_uom",
+    "availability_warehouse",
+    "availability_default_warehouse",
+    "availability_known_warehouses",
+    "availability_needs_warehouse_selection",
+    "availability_checked_at",
+    "quote_status",
+    "quote_requested_at",
+    "quote_prepared_at",
+    "quote_sent_at",
+    "quote_accepted_at",
+    "quote_rejected_at",
+    "order_correction_status",
+    "correction_type",
+    "correction_requested_at",
+    "correction_confirmed_at",
+    "correction_applied_at",
+    "correction_rejected_at",
+    "separate_order_requested",
+    "temperature",
+    "score",
+}
 
 
 def _now_iso() -> str:
@@ -73,6 +137,8 @@ def _bootstrap_contexts_from_legacy(session: dict[str, Any]) -> None:
     if isinstance(active_context, dict):
         session["contexts"] = contexts
         session["active_context_id"] = active_context_id
+        if not isinstance(active_context.get("deal_state"), dict) or not isinstance(active_context.get("progress_state"), dict) or not isinstance(active_context.get("signal_state"), dict):
+            _copy_session_state_into_context(session, active_context)
         return
     active_context = empty_context(
         lead_profile=session.get("lead_profile") if isinstance(session.get("lead_profile"), dict) else None,
@@ -83,6 +149,7 @@ def _bootstrap_contexts_from_legacy(session: dict[str, Any]) -> None:
         last_intent=str(session.get("last_intent") or "").strip() or None,
         last_intent_confidence=float(session.get("last_intent_confidence") or 0.0),
     )
+    _copy_session_state_into_context(session, active_context)
     session["contexts"] = {active_context["context_id"]: active_context}
     session["active_context_id"] = active_context["context_id"]
 
@@ -121,6 +188,9 @@ def empty_context(
         "last_intent": str(last_intent or "").strip() or None,
         "last_intent_confidence": float(last_intent_confidence or 0.0),
         "lead_profile": normalize_lead_profile(lead_profile),
+        "deal_state": {},
+        "progress_state": {},
+        "signal_state": {},
     }
 
 
@@ -148,6 +218,44 @@ def _context_title(context_type: str, profile: dict[str, Any], related_order_id:
     return "Purchase"
 
 
+def _dict_subset(profile: dict[str, Any], keys: set[str]) -> dict[str, Any]:
+    return {key: profile.get(key) for key in keys if profile.get(key) not in (None, "", [])}
+
+
+def _deal_state_from_profile(profile: dict[str, Any], *, related_order_id: str | None = None) -> dict[str, Any]:
+    deal = _dict_subset(profile, _DEAL_FIELDS)
+    if related_order_id:
+        deal["related_order_id"] = related_order_id
+    return deal
+
+
+def _progress_state_from_profile(
+    profile: dict[str, Any],
+    *,
+    stage: str,
+    stage_confidence: float,
+    behavior_class: str,
+    behavior_confidence: float,
+) -> dict[str, Any]:
+    progress = _dict_subset(profile, _PROGRESS_FIELDS)
+    progress["stage"] = stage
+    progress["stage_confidence"] = float(stage_confidence or 0.0)
+    progress["behavior_class"] = behavior_class
+    progress["behavior_confidence"] = float(behavior_confidence or 0.0)
+    return progress
+
+
+def _signal_state_from_session(session: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": str(session.get("signal_type") or "").strip() or "deal_progress",
+        "confidence": float(session.get("signal_confidence") or 0.0),
+        "preserves_deal": bool(session.get("signal_preserves_deal", True)),
+        "emotion": str(session.get("signal_emotion") or "").strip() or "neutral",
+        "intent": str(session.get("last_intent") or "").strip() or None,
+        "intent_confidence": float(session.get("last_intent_confidence") or 0.0),
+    }
+
+
 def _copy_session_state_into_context(
     session: dict[str, Any],
     context: dict[str, Any],
@@ -170,6 +278,15 @@ def _copy_session_state_into_context(
             or session.get("last_sales_order_name")
             or ""
         ).strip() or None
+    context["deal_state"] = _deal_state_from_profile(profile, related_order_id=context.get("related_order_id"))
+    context["progress_state"] = _progress_state_from_profile(
+        profile,
+        stage=context["stage"],
+        stage_confidence=context["stage_confidence"],
+        behavior_class=context["behavior_class"],
+        behavior_confidence=context["behavior_confidence"],
+    )
+    context["signal_state"] = _signal_state_from_session(session)
     context["title"] = _context_title(str(context.get("context_type") or DEFAULT_CONTEXT_TYPE), profile, context.get("related_order_id"))
     return context
 
@@ -234,6 +351,24 @@ def active_context(session: dict[str, Any]) -> dict[str, Any]:
     return _require_active_context(session)
 
 
+def active_deal_state(session: dict[str, Any]) -> dict[str, Any]:
+    context = active_context(session)
+    value = context.get("deal_state")
+    return value if isinstance(value, dict) else {}
+
+
+def active_progress_state(session: dict[str, Any]) -> dict[str, Any]:
+    context = active_context(session)
+    value = context.get("progress_state")
+    return value if isinstance(value, dict) else {}
+
+
+def active_signal_state(session: dict[str, Any]) -> dict[str, Any]:
+    context = active_context(session)
+    value = context.get("signal_state")
+    return value if isinstance(value, dict) else {}
+
+
 def sync_legacy_to_active_context(session: dict[str, Any]) -> dict[str, Any]:
     _bootstrap_contexts_from_legacy(session)
     context = _require_active_context(session)
@@ -245,6 +380,22 @@ def sync_legacy_to_active_context(session: dict[str, Any]) -> dict[str, Any]:
     context["last_intent_confidence"] = float(session.get("last_intent_confidence") or 0.0)
     context["lead_profile"] = normalize_lead_profile(session.get("lead_profile"))
     context["updated_at"] = _now_iso()
+    if context.get("context_type") == "order_edit":
+        context["related_order_id"] = str(
+            context.get("related_order_id")
+            or context["lead_profile"].get("target_order_id")
+            or session.get("last_sales_order_name")
+            or ""
+        ).strip() or None
+    context["deal_state"] = _deal_state_from_profile(context["lead_profile"], related_order_id=context.get("related_order_id"))
+    context["progress_state"] = _progress_state_from_profile(
+        context["lead_profile"],
+        stage=context["stage"],
+        stage_confidence=context["stage_confidence"],
+        behavior_class=context["behavior_class"],
+        behavior_confidence=context["behavior_confidence"],
+    )
+    context["signal_state"] = _signal_state_from_session(session)
     open_ids: list[str] = []
     for context_id, candidate in session["contexts"].items():
         if not isinstance(candidate, dict):
@@ -265,6 +416,11 @@ def sync_legacy_from_active_context(session: dict[str, Any]) -> dict[str, Any]:
     session["behavior_confidence"] = float(context.get("behavior_confidence") or 0.0)
     session["last_intent"] = context.get("last_intent")
     session["last_intent_confidence"] = float(context.get("last_intent_confidence") or 0.0)
+    signal_state = context.get("signal_state") if isinstance(context.get("signal_state"), dict) else {}
+    session["signal_type"] = str(signal_state.get("type") or session.get("signal_type") or "deal_progress").strip() or "deal_progress"
+    session["signal_confidence"] = float(signal_state.get("confidence") or session.get("signal_confidence") or 0.0)
+    session["signal_preserves_deal"] = bool(signal_state.get("preserves_deal", session.get("signal_preserves_deal", True)))
+    session["signal_emotion"] = str(signal_state.get("emotion") or session.get("signal_emotion") or "neutral").strip() or "neutral"
     session["lead_profile"] = normalize_lead_profile(context.get("lead_profile"))
     open_ids: list[str] = []
     for context_id, candidate in session["contexts"].items():
@@ -293,6 +449,11 @@ def create_context(
         related_order_id=related_order_id,
         lead_profile=lead_profile,
     )
+    _copy_session_state_into_context(
+        session,
+        context,
+        lead_profile=lead_profile if isinstance(lead_profile, dict) else context.get("lead_profile"),
+    )
     session["contexts"][context["context_id"]] = context
     if activate:
         session["active_context_id"] = context["context_id"]
@@ -318,6 +479,7 @@ def reconcile_contexts_after_state_update(
     current_profile = normalize_lead_profile(session.get("lead_profile"))
     previous_profile = normalize_lead_profile(previous_lead_profile)
     current_intent = str(session.get("last_intent") or "").strip()
+    current_signal_type = str(session.get("signal_type") or "").strip()
     current_context_type = str(current_context.get("context_type") or DEFAULT_CONTEXT_TYPE).strip() or DEFAULT_CONTEXT_TYPE
 
     if str(current_profile.get("order_correction_status") or "").strip() == "requested" and not bool(current_profile.get("separate_order_requested")):
@@ -338,10 +500,15 @@ def reconcile_contexts_after_state_update(
     current_interest = _product_interest(current_profile)
     should_open_new_purchase = bool(
         current_context_type == "order_edit"
-        and current_interest
-        and current_intent in {"find_product", "browse_catalog"}
-        and not bool(current_profile.get("order_correction_status") == "requested")
-        and not _same_text(previous_interest, current_interest)
+        and (
+            current_signal_type == "topic_shift"
+            or (
+                current_interest
+                and current_intent in {"find_product", "browse_catalog"}
+                and not bool(current_profile.get("order_correction_status") == "requested")
+                and not _same_text(previous_interest, current_interest)
+            )
+        )
     )
     if bool(current_profile.get("separate_order_requested")):
         should_open_new_purchase = True

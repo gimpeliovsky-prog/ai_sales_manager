@@ -20,6 +20,18 @@ from app.i18n import text as i18n_text
 
 DEFAULT_STAGE = "discover"
 DEFAULT_BEHAVIOR_CLASS = "unclear_request"
+DEFAULT_SIGNAL_TYPE = "deal_progress"
+SIGNAL_TYPES = {
+    "deal_progress",
+    "small_talk",
+    "price_objection",
+    "topic_shift",
+    "frustration",
+    "confirmation",
+    "service_request",
+    "low_signal",
+    "handoff_request",
+}
 _SUPPORTED_REGEX_FLAGS = {
     "IGNORECASE": re.IGNORECASE,
     "MULTILINE": re.MULTILINE,
@@ -252,6 +264,7 @@ def _derive_stage_from_state(
     *,
     session: dict[str, Any],
     intent: str,
+    signal_type: str,
     customer_identified: bool,
     needs_intro: bool,
     active_order_name: str | None,
@@ -262,12 +275,18 @@ def _derive_stage_from_state(
     next_action = str(lead_profile.get("next_action") or "")
     separate_order_requested = bool(lead_profile.get("separate_order_requested"))
 
-    if intent == "human_handoff":
+    if signal_type == "handoff_request" or intent == "human_handoff":
         return "handoff", 0.98
-    if intent == "small_talk":
+    if signal_type == "small_talk":
+        if previous_stage in STAGE_PROMPTS and previous_stage not in {"", "identify"}:
+            return previous_stage, 0.86
         return "new", 0.86
-    if status == "service" or intent == "service_request":
+    if signal_type == "service_request" or status == "service" or intent == "service_request":
         return "service", 0.95
+    if signal_type in {"price_objection", "frustration"} and previous_stage in STAGE_PROMPTS:
+        return previous_stage, 0.87
+    if signal_type == "topic_shift":
+        return "discover", 0.91
     if separate_order_requested:
         if next_action in {"ask_quantity", "ask_unit", "ask_delivery_timing", "confirm_order"} or lead_profile.get("product_interest"):
             return "order_build", 0.92
@@ -298,7 +317,7 @@ def _derive_stage_from_state(
         return "discover", 0.83
     if lead_profile.get("product_interest"):
         return "discover", 0.72
-    if intent == "low_signal":
+    if signal_type == "low_signal" or intent == "low_signal":
         return "clarify", 0.72
     if previous_stage in STAGE_PROMPTS:
         return previous_stage, 0.58
@@ -434,6 +453,7 @@ def classify_stage(
     *,
     session: dict[str, Any],
     intent: str,
+    signal_type: str | None = None,
     customer_identified: bool,
     needs_intro: bool,
     active_order_name: str | None,
@@ -442,11 +462,120 @@ def classify_stage(
     return _derive_stage_from_state(
         session=session,
         intent=intent,
+        signal_type=str(signal_type or intent or DEFAULT_SIGNAL_TYPE).strip() or DEFAULT_SIGNAL_TYPE,
         customer_identified=customer_identified,
         needs_intro=needs_intro,
         active_order_name=active_order_name,
         lead_profile=_lead_profile_dict(lead_profile),
     )
+
+
+def _active_context_type(session: dict[str, Any]) -> str | None:
+    contexts = session.get("contexts")
+    if not isinstance(contexts, dict):
+        return None
+    active_context_id = str(session.get("active_context_id") or "").strip()
+    if not active_context_id:
+        return None
+    active_context = contexts.get(active_context_id)
+    if not isinstance(active_context, dict):
+        return None
+    value = str(active_context.get("context_type") or "").strip()
+    return value or None
+
+
+def _signal_emotion(behavior_class: str) -> str:
+    if behavior_class == "frustrated":
+        return "impatient"
+    if behavior_class == "price_sensitive":
+        return "skeptical"
+    if behavior_class in {"direct_buyer", "returning_customer"}:
+        return "positive"
+    return "neutral"
+
+
+def _changed_product_topic(
+    *,
+    session: dict[str, Any],
+    current_profile: dict[str, Any],
+    previous_profile: dict[str, Any],
+    intent: str,
+    active_order_name: str | None,
+) -> bool:
+    if bool(current_profile.get("separate_order_requested")):
+        return True
+    if intent not in {"find_product", "browse_catalog"}:
+        return False
+    current_interest = str(
+        current_profile.get("catalog_item_name")
+        or current_profile.get("catalog_item_code")
+        or current_profile.get("product_interest")
+        or ""
+    ).strip()
+    previous_interest = str(
+        previous_profile.get("catalog_item_name")
+        or previous_profile.get("catalog_item_code")
+        or previous_profile.get("product_interest")
+        or ""
+    ).strip()
+    if not current_interest or not previous_interest:
+        return False
+    if current_interest.casefold() == previous_interest.casefold():
+        return False
+    return bool(
+        active_order_name
+        or str(current_profile.get("target_order_id") or previous_profile.get("target_order_id") or "").strip()
+        or str(current_profile.get("order_correction_status") or "").strip() == "requested"
+        or str(previous_profile.get("order_correction_status") or "").strip() == "requested"
+        or _active_context_type(session) == "order_edit"
+    )
+
+
+def classify_signal(
+    *,
+    session: dict[str, Any],
+    user_text: str,
+    intent: str,
+    behavior_class: str,
+    active_order_name: str | None,
+    lead_profile: dict[str, Any] | None = None,
+    previous_lead_profile: dict[str, Any] | None = None,
+) -> tuple[str, float, bool, str]:
+    current_profile = _lead_profile_dict(lead_profile)
+    previous_profile = _lead_profile_dict(previous_lead_profile)
+    normalized = _normalize_text(user_text)
+
+    if intent == "human_handoff":
+        return "handoff_request", 0.98, False, _signal_emotion(behavior_class)
+    if intent == "small_talk":
+        return "small_talk", 0.96, True, "positive"
+    if behavior_class == "frustrated":
+        return "frustration", 0.92, True, "impatient"
+    if intent == "service_request":
+        return "service_request", 0.95, True, _signal_emotion(behavior_class)
+    if _PRICE_RE.search(normalized):
+        return "price_objection", 0.88, True, "skeptical"
+    if behavior_class == "price_sensitive" and (
+        current_profile.get("product_interest")
+        or current_profile.get("catalog_item_code")
+        or current_profile.get("catalog_item_name")
+    ):
+        return "price_objection", 0.8, True, "skeptical"
+    if intent == "confirm_order":
+        return "confirmation", 0.9, True, _signal_emotion(behavior_class)
+    if _changed_product_topic(
+        session=session,
+        current_profile=current_profile,
+        previous_profile=previous_profile,
+        intent=intent,
+        active_order_name=active_order_name,
+    ):
+        return "topic_shift", 0.86, False, _signal_emotion(behavior_class)
+    if intent == "low_signal":
+        return "low_signal", 0.86, True, _signal_emotion(behavior_class)
+    if intent in {"find_product", "browse_catalog", "order_detail", "add_to_order"}:
+        return "deal_progress", 0.8, True, _signal_emotion(behavior_class)
+    return DEFAULT_SIGNAL_TYPE, 0.6, True, _signal_emotion(behavior_class)
 
 
 def derive_conversation_state(
@@ -464,6 +593,10 @@ def derive_conversation_state(
     behavior_confidence: float | None = None,
     intent: str | None = None,
     intent_confidence: float | None = None,
+    signal_type: str | None = None,
+    signal_confidence: float | None = None,
+    signal_preserves_deal: bool | None = None,
+    signal_emotion: str | None = None,
 ) -> dict[str, Any]:
     ai_policy = ai_policy if isinstance(ai_policy, dict) else {}
     handoff_rules = ai_policy.get("handoff_rules") if isinstance(ai_policy.get("handoff_rules"), dict) else {}
@@ -487,9 +620,33 @@ def derive_conversation_state(
     previous_profile = _lead_profile_dict(previous_lead_profile)
     current_profile.setdefault("customer_identified", customer_identified)
     previous_profile.setdefault("customer_identified", bool(session.get("erp_customer_id")))
+    resolved_signal_type = str(signal_type or "").strip()
+    resolved_signal_emotion = str(signal_emotion or "").strip()
+    resolved_signal_confidence = float(signal_confidence or 0.0)
+    resolved_signal_preserves_deal = signal_preserves_deal if isinstance(signal_preserves_deal, bool) else None
+    if resolved_signal_type not in SIGNAL_TYPES:
+        (
+            resolved_signal_type,
+            resolved_signal_confidence,
+            resolved_signal_preserves_deal,
+            resolved_signal_emotion,
+        ) = classify_signal(
+            session=session,
+            user_text=user_text,
+            intent=resolved_intent,
+            behavior_class=resolved_behavior_class,
+            active_order_name=active_order_name,
+            lead_profile=current_profile,
+            previous_lead_profile=previous_profile,
+        )
+    if not resolved_signal_emotion:
+        resolved_signal_emotion = _signal_emotion(resolved_behavior_class)
+    if resolved_signal_preserves_deal is None:
+        resolved_signal_preserves_deal = resolved_signal_type != "topic_shift"
     stage, stage_confidence = classify_stage(
         session=session,
         intent=resolved_intent,
+        signal_type=resolved_signal_type,
         customer_identified=customer_identified,
         needs_intro=needs_intro,
         active_order_name=active_order_name,
@@ -540,6 +697,10 @@ def derive_conversation_state(
         "behavior_confidence": round(float(resolved_behavior_confidence), 2),
         "last_intent": resolved_intent,
         "last_intent_confidence": round(float(resolved_intent_confidence), 2),
+        "signal_type": resolved_signal_type,
+        "signal_confidence": round(float(resolved_signal_confidence), 2),
+        "signal_preserves_deal": bool(resolved_signal_preserves_deal),
+        "signal_emotion": resolved_signal_emotion,
         "failed_clarification_count": failed_clarification_count,
         "handoff_required": handoff_required,
         "handoff_reason": handoff_reason,

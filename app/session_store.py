@@ -99,6 +99,10 @@ def _empty_session() -> dict[str, Any]:
         "behavior_confidence": 0.0,
         "last_intent": None,
         "last_intent_confidence": 0.0,
+        "signal_type": "low_signal",
+        "signal_confidence": 0.0,
+        "signal_preserves_deal": True,
+        "signal_emotion": "neutral",
         "lead_profile": {
             "status": "none",
             "lead_id": None,

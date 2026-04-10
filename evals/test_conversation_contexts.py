@@ -1,6 +1,9 @@
 import unittest
 
 from app.conversation_contexts import (
+    active_deal_state,
+    active_progress_state,
+    active_signal_state,
     create_context,
     ensure_session_contexts,
     reconcile_contexts_after_state_update,
@@ -36,17 +39,28 @@ class ConversationContextsTests(unittest.TestCase):
             "behavior_confidence": 0.0,
             "last_intent": None,
             "last_intent_confidence": 0.0,
+            "signal_type": "low_signal",
+            "signal_confidence": 0.0,
+            "signal_preserves_deal": True,
+            "signal_emotion": "neutral",
             "lead_profile": {"status": "none"},
         }
         ensure_session_contexts(session)
         session["stage"] = "clarify"
         session["last_intent"] = "order_detail"
+        session["signal_type"] = "deal_progress"
+        session["signal_confidence"] = 0.83
+        session["signal_preserves_deal"] = True
+        session["signal_emotion"] = "neutral"
         session["lead_profile"] = {"product_interest": "monitor", "status": "qualified"}
         sync_legacy_to_active_context(session)
         active = session["contexts"][session["active_context_id"]]
         self.assertEqual(active["stage"], "clarify")
         self.assertEqual(active["last_intent"], "order_detail")
         self.assertEqual(active["lead_profile"]["product_interest"], "monitor")
+        self.assertEqual(active_signal_state(session)["type"], "deal_progress")
+        self.assertEqual(active_deal_state(session)["product_interest"], "monitor")
+        self.assertEqual(active_progress_state(session)["status"], "qualified")
 
     def test_create_context_can_switch_active_branch(self) -> None:
         session = {
@@ -116,6 +130,10 @@ class ConversationContextsTests(unittest.TestCase):
         self.assertEqual(session["contexts"][order_edit_context_id]["context_type"], "order_edit")
 
         session["last_intent"] = "find_product"
+        session["signal_type"] = "topic_shift"
+        session["signal_confidence"] = 0.86
+        session["signal_preserves_deal"] = False
+        session["signal_emotion"] = "neutral"
         session["lead_profile"] = {
             "status": "new_lead",
             "product_interest": "monitor",
@@ -131,6 +149,7 @@ class ConversationContextsTests(unittest.TestCase):
         self.assertEqual(active["context_type"], "new_purchase")
         self.assertEqual(active["lead_profile"]["product_interest"], "monitor")
         self.assertEqual(active["lead_profile"]["order_correction_status"], "none")
+        self.assertEqual(active_signal_state(session)["type"], "topic_shift")
 
 
 if __name__ == "__main__":

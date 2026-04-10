@@ -1626,14 +1626,19 @@ async def _classify_state_with_llm(
         "model": model,
         "instructions": (
             "Classify the customer's latest message for sales-runtime state update. "
-            "Return only compact JSON with keys: intent, behavior_class, confidence, next_action, lead_patch, reason. "
+            "Return only compact JSON with keys: intent, signal_type, signal_emotion, signal_preserves_deal, behavior_class, confidence, next_action, lead_patch, reason. "
             "intent must be one of: low_signal, small_talk, find_product, browse_catalog, order_detail, confirm_order, add_to_order, service_request, human_handoff. "
+            "signal_type must be one of: deal_progress, small_talk, price_objection, topic_shift, frustration, confirmation, service_request, low_signal, handoff_request. "
+            "signal_emotion must be one of: neutral, positive, impatient, skeptical. "
+            "signal_preserves_deal must be true when the current commercial thread should stay active after handling the message, and false when the customer is explicitly shifting away from it. "
             "behavior_class must be one of: direct_buyer, explorer, unclear_request, price_sensitive, frustrated, service_request, returning_customer, silent_or_low_signal. "
             "next_action must be one of: handoff_manager, fulfill_service_request, ask_need, show_matching_options, select_specific_item, ask_quantity, ask_unit, ask_delivery_timing, ask_contact, quote_or_clarify_price, confirm_order, recommend_next_step. "
             "lead_patch may include only these keys when clearly supported by the message and context: product_interest, quantity, uom, urgency, delivery_need, price_sensitivity, decision_status. "
             "quantity must be a numeric value or null, never a string with unit words or approximations. "
             "Use next_action to express the single best next sales step after this message. "
             "Use small_talk for greetings, social check-ins, or politeness in any language when there is no product, service, or order request yet. "
+            "Use price_objection for messages such as 'expensive', 'too much', or equivalent objections in any language when the deal should continue after the response. "
+            "Use topic_shift when the customer is moving from the current deal or order-edit thread to another product or a separate order. "
             "Prefer show_matching_options or select_specific_item when the customer named only a broad product and asks what exists. "
             "Do not ask again for quantity or UOM when they are already known in the lead profile unless the customer changes them. "
             "If there is an active order and the customer explicitly asks for a new or separate order, do not treat that as add_to_order. "
@@ -1646,6 +1651,7 @@ async def _classify_state_with_llm(
                     {
                         "current_stage": session.get("stage"),
                         "current_intent": session.get("last_intent"),
+                        "current_signal_type": session.get("signal_type"),
                         "current_behavior_class": session.get("behavior_class"),
                         "customer_identified": bool(session.get("erp_customer_id")),
                         "active_order_name": session.get("last_sales_order_name"),
@@ -2214,11 +2220,13 @@ async def _process_message_result_locked(
     llm_is_valid = isinstance(llm_state_result, dict) and llm_state_result.get("valid")
     llm_confidence = float(llm_state_result.get("confidence") or 0) if llm_is_valid else 0.0
     llm_intent = str(llm_state_result.get("intent") or "") if llm_is_valid else ""
+    llm_signal_type = str(llm_state_result.get("signal_type") or "") if llm_is_valid else ""
     use_llm_state = (
         llm_is_valid
         and (
             llm_confidence >= _state_updater_min_confidence(tenant)
             or (llm_intent == "small_talk" and llm_confidence >= 0.45)
+            or (llm_signal_type in {"small_talk", "price_objection", "topic_shift"} and llm_confidence >= 0.45)
         )
     )
     if use_llm_state:
@@ -2280,6 +2288,10 @@ async def _process_message_result_locked(
             behavior_confidence=behavior_confidence,
             intent=intent,
             intent_confidence=intent_confidence,
+            signal_type=llm_state_result.get("signal_type") if use_llm_state else None,
+            signal_confidence=llm_confidence if use_llm_state and llm_state_result.get("signal_type") else None,
+            signal_preserves_deal=llm_state_result.get("signal_preserves_deal") if use_llm_state else None,
+            signal_emotion=llm_state_result.get("signal_emotion") if use_llm_state else None,
         )
     )
     reconcile_contexts_after_state_update(
@@ -2316,6 +2328,9 @@ async def _process_message_result_locked(
         behavior_confidence=session.get("behavior_confidence"),
         intent=session.get("last_intent"),
         intent_confidence=session.get("last_intent_confidence"),
+        signal_type=session.get("signal_type"),
+        signal_confidence=session.get("signal_confidence"),
+        signal_emotion=session.get("signal_emotion"),
         handoff_required=session.get("handoff_required"),
         handoff_reason=session.get("handoff_reason"),
         lead_profile=session.get("lead_profile"),
@@ -2337,6 +2352,9 @@ async def _process_message_result_locked(
             "behavior_confidence": session.get("behavior_confidence"),
             "intent": session.get("last_intent"),
             "intent_confidence": session.get("last_intent_confidence"),
+            "signal_type": session.get("signal_type"),
+            "signal_confidence": session.get("signal_confidence"),
+            "signal_emotion": session.get("signal_emotion"),
             "handoff_required": session.get("handoff_required"),
             "handoff_reason": session.get("handoff_reason"),
             "lead_profile": session.get("lead_profile"),
@@ -2394,7 +2412,7 @@ async def _process_message_result_locked(
         result["text"] = reply
         return result
 
-    if intent == "small_talk":
+    if str(session.get("signal_type") or "").strip() == "small_talk":
         reply = _small_talk_reply(current_lang)
         session["messages"].append({"role": "user", "content": user_text})
         session["messages"].append({"role": "assistant", "content": reply})
@@ -2408,16 +2426,21 @@ async def _process_message_result_locked(
             role="assistant",
             content=reply,
             message_type="small_talk",
-            payload={"lead_profile": session.get("lead_profile")},
+            payload={
+                "lead_profile": session.get("lead_profile"),
+                "signal_type": session.get("signal_type"),
+                "signal_emotion": session.get("signal_emotion"),
+            },
         )
         result["text"] = reply
         return result
 
     normalized_runtime_profile = normalize_lead_profile(session.get("lead_profile"))
+    runtime_signal = str(session.get("signal_type") or session.get("last_intent") or "").strip()
     if should_block_for_intro_before_assistance(
         needs_intro=needs_intro,
         customer_identified=bool(session.get("erp_customer_id")),
-        intent=session.get("last_intent"),
+        intent=runtime_signal,
         lead_profile=normalized_runtime_profile,
     ) or should_request_intro_before_next_step(
         needs_intro=needs_intro,

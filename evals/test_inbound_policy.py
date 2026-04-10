@@ -1,6 +1,6 @@
 import unittest
 
-from app.conversation_flow import classify_stage
+from app.conversation_flow import classify_signal, classify_stage
 from app.inbound_policy import should_block_for_intro_before_assistance, should_request_intro_before_next_step
 
 
@@ -77,6 +77,33 @@ class InboundPolicyTests(unittest.TestCase):
             lead_profile={"status": "none", "next_action": "ask_need"},
         )
         self.assertEqual(stage, "new")
+
+    def test_small_talk_does_not_reset_existing_order_stage(self) -> None:
+        stage, _ = classify_stage(
+            session={"stage": "invoice"},
+            intent="small_talk",
+            signal_type="small_talk",
+            customer_identified=True,
+            needs_intro=False,
+            active_order_name="SO-1",
+            lead_profile={"status": "order_created", "next_action": "send_order_or_offer_invoice"},
+        )
+        self.assertEqual(stage, "invoice")
+
+    def test_price_objection_signal_preserves_deal(self) -> None:
+        signal_type, confidence, preserves_deal, emotion = classify_signal(
+            session={"stage": "discover"},
+            user_text="too expensive",
+            intent="find_product",
+            behavior_class="price_sensitive",
+            active_order_name=None,
+            lead_profile={"product_interest": "laptop", "next_action": "quote_or_clarify_price"},
+            previous_lead_profile={"product_interest": "laptop"},
+        )
+        self.assertEqual(signal_type, "price_objection")
+        self.assertTrue(preserves_deal)
+        self.assertEqual(emotion, "skeptical")
+        self.assertGreaterEqual(confidence, 0.8)
 
 
 if __name__ == "__main__":

@@ -86,6 +86,29 @@ SALES_PLAYBOOK: list[str] = [
     "Always end with one concrete next step or one focused question unless the task is already complete.",
 ]
 
+BEHAVIOR_EXAMPLES: list[tuple[str, str, str]] = [
+    (
+        "small_talk",
+        "Customer: how are you?\nManager: I'm good, thanks. What would you like to order today?",
+        "Handle the social signal briefly, then return to the business thread without inventing product context.",
+    ),
+    (
+        "price_objection",
+        "Customer: expensive\nManager: Understood. I can check a cheaper option or a different packaging. Which matters more: lower total price or the exact item?",
+        "Treat price resistance as an objection inside the same deal, not as a topic reset.",
+    ),
+    (
+        "topic_shift",
+        "Customer: add 3 more to the order\nCustomer: actually I need monitors instead\nManager: Understood. For the monitors, which size or model do you need?",
+        "Open or switch to a new purchase thread without erasing the existing order-edit thread.",
+    ),
+    (
+        "confirmation",
+        "Customer: yes, proceed\nManager: Understood. I'll create the order now.",
+        "When the order is already fully anchored and the customer clearly confirms, move to execution instead of re-asking for confirmation.",
+    ),
+]
+
 
 def _append_override_lines(base: list[str], overrides: Any) -> list[str]:
     merged = list(base)
@@ -291,12 +314,46 @@ def _conversation_context_lines(
         active_type = str(active.get("context_type") or "new_purchase").strip()
         active_title = str(active.get("title") or "").strip()
         active_order = str(active.get("related_order_id") or "").strip()
+        active_signal = active.get("signal_state") if isinstance(active.get("signal_state"), dict) else {}
+        active_deal = active.get("deal_state") if isinstance(active.get("deal_state"), dict) else {}
+        active_progress = active.get("progress_state") if isinstance(active.get("progress_state"), dict) else {}
         active_line = f"Active conversation context: {active_type}"
         if active_title:
             active_line += f" ({active_title})"
         if active_order:
             active_line += f", related order {active_order}"
         lines.append(active_line)
+        signal_type = str(active_signal.get("type") or "").strip()
+        if signal_type:
+            signal_line = f"Active signal: {signal_type}"
+            signal_emotion = str(active_signal.get("emotion") or "").strip()
+            if signal_emotion:
+                signal_line += f", emotion {signal_emotion}"
+            if active_signal.get("preserves_deal") is False:
+                signal_line += ", this signal can change the active deal"
+            lines.append(signal_line)
+        deal_parts: list[str] = []
+        if active_deal.get("product_interest"):
+            deal_parts.append(f"product {active_deal.get('product_interest')}")
+        if active_deal.get("catalog_item_name"):
+            deal_parts.append(f"selected item {active_deal.get('catalog_item_name')}")
+        if active_deal.get("quantity") not in (None, "", []):
+            deal_parts.append(f"quantity {active_deal.get('quantity')}")
+        if active_deal.get("uom"):
+            deal_parts.append(f"unit {active_deal.get('uom')}")
+        if deal_parts:
+            lines.append(f"Active deal state: {', '.join(deal_parts)}")
+        progress_parts: list[str] = []
+        if active_progress.get("status"):
+            progress_parts.append(f"status {active_progress.get('status')}")
+        if active_progress.get("next_action"):
+            progress_parts.append(f"next step {active_progress.get('next_action')}")
+        if active_progress.get("qualification_priority"):
+            progress_parts.append(f"priority {active_progress.get('qualification_priority')}")
+        if active_progress.get("order_correction_status") and active_progress.get("order_correction_status") != "none":
+            progress_parts.append(f"order correction {active_progress.get('order_correction_status')}")
+        if progress_parts:
+            lines.append(f"Active progress state: {', '.join(progress_parts)}")
     open_summaries: list[str] = []
     for context_id, context in contexts.items():
         if not isinstance(context, dict) or context_id == active_id:
@@ -316,6 +373,15 @@ def _conversation_context_lines(
     if open_summaries:
         lines.append(f"Other open contexts: {'; '.join(open_summaries[:3])}")
         lines.append("Do not mix the active context with other open contexts unless the customer clearly switches topics.")
+    return lines
+
+
+def _behavior_example_lines() -> list[str]:
+    lines: list[str] = []
+    for signal_type, dialogue, lesson in BEHAVIOR_EXAMPLES:
+        lines.append(f"{signal_type}:")
+        lines.append(dialogue)
+        lines.append(f"Why: {lesson}")
     return lines
 
 
@@ -455,6 +521,10 @@ def build_runtime_system_prompt(
     if context_lines:
         lines.append("")
         lines.extend(_section("Context", _dedupe_lines(context_lines)))
+    example_lines = _behavior_example_lines()
+    if example_lines:
+        lines.append("")
+        lines.extend(_section("Examples", example_lines))
     lead_state_guards = _lead_state_guard_lines(lead_profile)
     if lead_state_guards:
         lines.append("")
