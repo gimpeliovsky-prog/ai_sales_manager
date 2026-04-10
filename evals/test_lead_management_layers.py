@@ -91,6 +91,39 @@ class LeadManagementLayersTests(unittest.TestCase):
         self.assertEqual(profile["target_order_id"], "SAL-ORD-2026-00025")
         self.assertEqual(profile["quote_status"], "accepted")
 
+    def test_tool_update_authoritatively_reconciles_order_created_state(self) -> None:
+        profile = update_lead_profile_from_tool(
+            current_profile={
+                "status": "new_lead",
+                "product_interest": "It seems I have already have open ride check it",
+                "catalog_item_name": "Laptop",
+                "need": "Laptop",
+                "quantity": 10,
+                "uom": "piece",
+                "missing_slots": ["delivery_need", "confirmation"],
+                "next_action": "ask_delivery_timing",
+                "qualification_priority": "timing_or_delivery",
+                "separate_order_requested": True,
+                "order_correction_status": "requested",
+            },
+            tool_name="create_sales_order",
+            inputs={"items": [{"item_code": "SKU002", "qty": 10, "uom": "pcs"}]},
+            tool_result={"name": "SAL-ORD-2026-00026", "grand_total": 8000, "currency": "ILS"},
+            stage="confirm",
+            customer_identified=True,
+            active_order_name=None,
+        )
+        self.assertEqual(profile["status"], "order_created")
+        self.assertEqual(profile["target_order_id"], "SAL-ORD-2026-00026")
+        self.assertEqual(profile["product_interest"], "Laptop")
+        self.assertEqual(profile["need"], "Laptop")
+        self.assertEqual(profile["missing_slots"], [])
+        self.assertEqual(profile["next_action"], "send_order_or_offer_invoice")
+        self.assertEqual(profile["qualification_priority"], "next_best_action")
+        self.assertFalse(profile["separate_order_requested"])
+        self.assertEqual(profile["order_correction_status"], "none")
+        self.assertEqual(profile["uom"], "piece")
+
     def test_small_talk_message_does_not_seed_product_interest(self) -> None:
         profile = update_lead_profile_from_message(
             current_profile={"status": "none"},

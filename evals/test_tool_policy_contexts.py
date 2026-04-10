@@ -67,6 +67,43 @@ class ToolPolicyContextTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertTrue(result["blocked_by_policy"])
 
+    def test_create_sales_order_blocked_after_order_already_created_in_same_context(self) -> None:
+        session = {
+            "erp_customer_id": "CUST-1",
+            "stage": "invoice",
+            "behavior_class": "direct_buyer",
+            "last_intent": "confirm_order",
+            "signal_type": "confirmation",
+            "signal_confidence": 0.99,
+            "signal_preserves_deal": True,
+            "signal_emotion": "neutral",
+            "lead_profile": {
+                "status": "order_created",
+                "target_order_id": "SO-200",
+                "next_action": "send_order_or_offer_invoice",
+                "missing_slots": [],
+                "catalog_item_code": "SKU002",
+                "quantity": 10,
+                "uom": "piece",
+            },
+        }
+        ensure_session_contexts(session)
+        reconcile_contexts_after_state_update(
+            session,
+            previous_lead_profile={"status": "order_created", "target_order_id": "SO-200"},
+            active_order_name="SO-200",
+        )
+        result = evaluate_tool_call(
+            tool_name="create_sales_order",
+            inputs={"items": [{"item_code": "SKU002", "qty": 10, "uom": "piece"}]},
+            session=session,
+            tenant={},
+            user_text="I confirm",
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result["blocked_by_policy"])
+        self.assertIn("already been created", result["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

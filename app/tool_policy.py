@@ -76,6 +76,32 @@ def evaluate_tool_call(
     separate_order_requested = bool(lead_profile.get("separate_order_requested"))
     quote_status = str(progress_state.get("quote_status") or lead_profile.get("quote_status") or "").strip()
     signal_type = str(signal_state.get("type") or session.get("signal_type") or "").strip()
+    missing_slots = [
+        str(item).strip()
+        for item in (progress_state.get("missing_slots") if isinstance(progress_state.get("missing_slots"), list) else lead_profile.get("missing_slots") if isinstance(lead_profile.get("missing_slots"), list) else [])
+        if str(item).strip()
+    ]
+    if has_items:
+        supplied_item_codes = [
+            str(item.get("item_code") or "").strip()
+            for item in inputs.get("items")
+            if isinstance(item, dict)
+        ]
+        supplied_qty = any(
+            isinstance(item, dict) and item.get("qty") not in (None, "", 0, 0.0)
+            for item in inputs.get("items")
+        )
+        supplied_uom = any(
+            isinstance(item, dict) and str(item.get("uom") or "").strip()
+            for item in inputs.get("items")
+        )
+        if any(supplied_item_codes):
+            missing_slots = [slot for slot in missing_slots if slot not in {"product_interest", "specific_item"}]
+        if supplied_qty:
+            missing_slots = [slot for slot in missing_slots if slot != "quantity"]
+        if supplied_uom:
+            missing_slots = [slot for slot in missing_slots if slot != "uom"]
+    blocking_missing_slots = [slot for slot in missing_slots if slot != "confirmation"]
     if progress_state.get("stage"):
         stage = str(progress_state.get("stage") or "").strip()
     if signal_state.get("intent"):
@@ -127,6 +153,17 @@ def evaluate_tool_call(
                 "Cannot create a sales order before the buyer is identified.",
                 "Identify or register the buyer first.",
             )
+        if (
+            not separate_order_requested
+            and bool(lead_profile.get("target_order_id") or active_order_name)
+            and stage in {"invoice", "service", "closed"}
+            and str(progress_state.get("next_action") or lead_profile.get("next_action") or "").strip() == "send_order_or_offer_invoice"
+        ):
+            return _deny(
+                tool_name,
+                "A sales order has already been created in this conversation context.",
+                "Offer the current order PDF, invoice, or ask whether the customer wants to start a separate new order.",
+            )
         if stage not in {"order_build", "confirm"} and context_type not in {"new_purchase", "quote_negotiation"} and not (separate_order_requested and stage in {"invoice", "service", "closed"}):
             return _deny(
                 tool_name,
@@ -138,6 +175,12 @@ def evaluate_tool_call(
                 tool_name,
                 "Sales order creation requires at least one item.",
                 "Ask which item and quantity the customer wants.",
+            )
+        if blocking_missing_slots:
+            return _deny(
+                tool_name,
+                "Sales order creation is blocked because required order details are still missing in the active context.",
+                f"Resolve the missing details first: {', '.join(blocking_missing_slots)}.",
             )
         if needs_multi_item_uom_confirmation:
             assumed_uom = str(lead_profile.get("requested_items_assumed_uom") or "box")
@@ -197,6 +240,12 @@ def evaluate_tool_call(
                 tool_name,
                 "Sales order update requires at least one correction operation.",
                 "Ask which order line should be added, updated, or removed.",
+            )
+        if blocking_missing_slots:
+            return _deny(
+                tool_name,
+                "Sales order update is blocked because required order details are still missing in the active context.",
+                f"Resolve the missing details first: {', '.join(blocking_missing_slots)}.",
             )
         if needs_multi_item_uom_confirmation:
             assumed_uom = str(lead_profile.get("requested_items_assumed_uom") or "box")

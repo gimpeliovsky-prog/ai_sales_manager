@@ -249,7 +249,7 @@ def _copy_session_state_into_context(
     context["last_intent_confidence"] = float(session.get("last_intent_confidence") or 0.0)
     context["lead_profile"] = profile
     context["updated_at"] = _now_iso()
-    if context.get("context_type") == "order_edit":
+    if context.get("context_type") in {"order_edit", "new_purchase", "quote_negotiation", "service_request"}:
         context["related_order_id"] = str(
             context.get("related_order_id")
             or profile.get("target_order_id")
@@ -369,6 +369,29 @@ def active_signal_state(session: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def mark_active_context_status(
+    session: dict[str, Any],
+    *,
+    status: str,
+    event_type: str | None = None,
+    event_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    _bootstrap_contexts_from_legacy(session)
+    context = _require_active_context(session)
+    resolved_status = str(status or "").strip() or "open"
+    if str(context.get("status") or "").strip() != resolved_status:
+        context["status"] = resolved_status
+        context["updated_at"] = _now_iso()
+        if event_type:
+            _append_context_event(
+                session,
+                event_type=event_type,
+                context_id=str(context.get("context_id") or "").strip() or None,
+                payload=event_payload,
+            )
+    return sync_legacy_from_active_context(session)
+
+
 def refresh_active_context_state(
     session: dict[str, Any],
     *,
@@ -433,7 +456,7 @@ def sync_legacy_to_active_context(session: dict[str, Any]) -> dict[str, Any]:
     context["last_intent_confidence"] = float(session.get("last_intent_confidence") or 0.0)
     context["lead_profile"] = normalize_lead_profile(session.get("lead_profile"))
     context["updated_at"] = _now_iso()
-    if context.get("context_type") == "order_edit":
+    if context.get("context_type") in {"order_edit", "new_purchase", "quote_negotiation", "service_request"}:
         context["related_order_id"] = str(
             context.get("related_order_id")
             or context["lead_profile"].get("target_order_id")

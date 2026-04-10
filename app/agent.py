@@ -30,6 +30,7 @@ from app.conversation_contexts import (
     active_lead_profile,
     active_related_order_id,
     active_signal_state,
+    mark_active_context_status,
     mutate_active_lead_profile,
     reconcile_contexts_after_state_update,
     set_active_lead_profile,
@@ -1530,6 +1531,14 @@ def _tool_success_fallback_reply(tool_name: str, tool_result: dict[str, Any], la
     return None
 
 
+def _is_terminal_write_tool_success(tool_name: str, tool_result: dict[str, Any] | None) -> bool:
+    if tool_name not in {"create_sales_order", "update_sales_order", "create_invoice"}:
+        return False
+    if not isinstance(tool_result, dict) or tool_result.get("error"):
+        return False
+    return bool(str(tool_result.get("name") or "").strip())
+
+
 async def _create_openai_response(
     client: httpx.AsyncClient,
     *,
@@ -2687,6 +2696,7 @@ async def _process_message_result_locked(
     synthesized_confirmation_tool = False
     last_successful_tool_name: str | None = None
     last_successful_tool_result: dict[str, Any] | None = None
+    terminal_tool_completed = False
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         for _ in range(max_iter):
@@ -2995,6 +3005,19 @@ async def _process_message_result_locked(
                     payload=summary,
                 )
 
+                if _is_terminal_write_tool_success(tool_name, parsed_result):
+                    mark_active_context_status(
+                        session,
+                        status="completed",
+                        event_type="context_completed",
+                        event_payload={"tool_name": tool_name, "order_name": parsed_result.get("name")},
+                    )
+                    fallback_reply = _tool_success_fallback_reply(tool_name, parsed_result, current_lang)
+                    if fallback_reply:
+                        final_reply = fallback_reply
+                    terminal_tool_completed = True
+                    break
+
                 tool_outputs.append(
                     {
                         "type": "function_call_output",
@@ -3003,6 +3026,8 @@ async def _process_message_result_locked(
                     }
                 )
 
+            if terminal_tool_completed:
+                break
             input_items = _trim_input_items(input_items + response.get("output", []) + tool_outputs)
         else:
             final_reply = "Произошла внутренняя ошибка, попробуйте позже."

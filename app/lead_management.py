@@ -1530,11 +1530,12 @@ def _apply_tool_effects(
         if first_item.get("qty"):
             profile["quantity"] = first_item.get("qty")
         if first_item.get("uom"):
-            profile["uom"] = first_item.get("uom")
+            profile["uom"] = canonical_uom(first_item.get("uom"), merged_uom_config(None, "single_item_uom_terms")) or first_item.get("uom")
         if first_item.get("item_code"):
             profile["catalog_item_code"] = str(first_item.get("item_code"))
-            profile["catalog_item_name"] = profile.get("catalog_item_name") or profile.get("product_interest") or str(first_item.get("item_code"))
-            profile["product_interest"] = profile.get("product_interest") or str(first_item.get("item_code"))
+            profile["catalog_item_name"] = profile.get("catalog_item_name") or str(first_item.get("item_code"))
+            profile["product_interest"] = profile.get("catalog_item_name") or str(first_item.get("item_code"))
+            profile["need"] = profile.get("catalog_item_name") or profile.get("need") or profile.get("product_interest")
 
     if tool_name == "register_buyer" and tool_result.get("erp_customer_id"):
         customer_identified_from_tool = True
@@ -1610,6 +1611,72 @@ def _apply_tool_effects(
     return profile, customer_identified_from_tool, resolved_active_order_name
 
 
+def _enforce_authoritative_tool_transition(
+    *,
+    profile: dict[str, Any],
+    tool_name: str,
+    tool_result: dict[str, Any],
+    customer_identified: bool,
+    active_order_name: str | None,
+    now: datetime,
+) -> dict[str, Any]:
+    if not isinstance(tool_result, dict) or tool_result.get("error"):
+        return profile
+
+    order_name = _clean_text(tool_result.get("name"), limit=120) or _clean_text(active_order_name, limit=120)
+    canonical_anchor = _clean_text(profile.get("catalog_item_name"), limit=160) or _clean_text(profile.get("product_interest"), limit=160)
+
+    if tool_name in {"create_sales_order", "update_sales_order"} and order_name:
+        if canonical_anchor:
+            profile["catalog_item_name"] = canonical_anchor
+            profile["product_interest"] = canonical_anchor
+            profile["need"] = canonical_anchor
+        profile["target_order_id"] = order_name
+        profile["status"] = "order_created"
+        profile["decision_status"] = "ready_to_buy"
+        profile["missing_slots"] = []
+        profile["next_action"] = "send_order_or_offer_invoice"
+        profile["qualification_priority"] = "next_best_action"
+        profile["qualification_priority_reason"] = "The order is already created; continue with the order PDF, invoice, or any follow-up service request."
+        profile["followup_strategy"] = "generic_stalled"
+        profile["order_created_at"] = profile.get("order_created_at") or now.isoformat()
+        profile["order_ready_at"] = profile.get("order_ready_at") or now.isoformat()
+        profile["active_order_state"] = "draft"
+        profile["active_order_can_modify"] = True
+        profile["active_order_checked_at"] = now.isoformat()
+        profile["separate_order_requested"] = False
+        profile["order_correction_status"] = "none"
+        profile["quote_status"] = "accepted"
+        profile["quote_accepted_at"] = profile.get("quote_accepted_at") or now.isoformat()
+        profile["score"] = _score_profile(
+            profile=profile,
+            customer_identified=customer_identified,
+            stage="invoice",
+            intent="tool_result",
+        )
+        profile["temperature"] = _temperature(int(profile["score"]))
+        _set_product_resolution_state(profile)
+        _synchronize_need_anchor(profile)
+        return profile
+
+    if tool_name == "create_invoice" and order_name:
+        profile["status"] = "won"
+        profile["missing_slots"] = []
+        profile["next_action"] = "recommend_next_step"
+        profile["qualification_priority"] = "next_best_action"
+        profile["qualification_priority_reason"] = "The invoice is already created; continue with any requested document or service follow-up."
+        profile["followup_strategy"] = "generic_stalled"
+        profile["won_at"] = profile.get("won_at") or now.isoformat()
+        profile["score"] = _score_profile(
+            profile=profile,
+            customer_identified=customer_identified,
+            stage="closed",
+            intent="tool_result",
+        )
+        profile["temperature"] = _temperature(int(profile["score"]))
+    return profile
+
+
 def update_lead_profile_from_message(
     *,
     current_profile: Any,
@@ -1681,6 +1748,14 @@ def update_lead_profile_from_tool(
         previous_temperature=previous_temperature,
         stage=str(stage or ""),
         intent="tool_result",
+        customer_identified=customer_identified or identified_from_tool,
+        active_order_name=resolved_active_order_name,
+        now=resolved_now,
+    )
+    finalized = _enforce_authoritative_tool_transition(
+        profile=finalized,
+        tool_name=tool_name,
+        tool_result=tool_result,
         customer_identified=customer_identified or identified_from_tool,
         active_order_name=resolved_active_order_name,
         now=resolved_now,
