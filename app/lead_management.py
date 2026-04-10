@@ -1298,6 +1298,170 @@ def _mark_lifecycle(
     return profile
 
 
+def _apply_requested_items_reducer(
+    *,
+    profile: dict[str, Any],
+    semantic_text: str,
+    normalized_text: str | None,
+    requested_items: list[dict[str, Any]],
+    lead_config: dict[str, Any] | None,
+) -> bool:
+    if requested_items:
+        assumed_uom = multi_item_default_uom(lead_config)
+        product_summary = "; ".join(str(item.get("item_text") or "") for item in requested_items if item.get("item_text"))
+        profile["requested_items"] = requested_items
+        profile["requested_item_count"] = len(requested_items)
+        profile["requested_items_have_quantities"] = True
+        profile["requested_items_need_uom_confirmation"] = not all(item.get("uom") for item in requested_items)
+        profile["requested_items_assumed_uom"] = None if not profile["requested_items_need_uom_confirmation"] else assumed_uom
+        profile["requested_items_uom_assumption_status"] = "confirmed" if not profile["requested_items_need_uom_confirmation"] else "likely"
+        if product_summary:
+            profile["product_interest"] = product_summary
+            _reset_catalog_lookup_state(profile)
+        if normalized_text and not profile.get("need"):
+            profile["need"] = normalized_text
+        return True
+
+    if profile.get("requested_items") and profile.get("requested_items_need_uom_confirmation"):
+        confirmed_uom = _confirmed_multi_item_uom(semantic_text, profile, lead_config)
+        if confirmed_uom:
+            _apply_multi_item_uom(profile, confirmed_uom)
+        return True
+
+    return False
+
+
+def _apply_product_anchor_reducer(
+    *,
+    profile: dict[str, Any],
+    preserve_order_service_anchor: bool,
+    current_priority: str,
+    product_resolution_intent: str,
+    normalized_text: str | None,
+    extracted_uom: str | None,
+    qty: float | None,
+    product_evidence: bool,
+    lead_config: dict[str, Any] | None,
+) -> None:
+    if preserve_order_service_anchor or not product_evidence:
+        return
+    if not _should_replace_product_interest(
+        current_interest=_clean_text(profile.get("product_interest")),
+        normalized_text=normalized_text,
+        current_priority=current_priority,
+        resolved_intent=product_resolution_intent,
+        extracted_uom=extracted_uom,
+        qty=qty,
+        config=lead_config,
+    ):
+        return
+
+    normalized_interest = _normalize_single_item_interest(normalized_text, lead_config)
+    previous_interest = _clean_text(profile.get("product_interest"))
+    if previous_interest and normalized_interest and not _same_interest(normalized_interest, previous_interest):
+        _reset_product_qualification_state(
+            profile,
+            keep_quantity=qty is not None,
+            keep_uom=bool(extracted_uom),
+        )
+    profile["product_interest"] = normalized_interest
+    profile["need"] = profile.get("need") or normalized_interest
+    _reset_catalog_lookup_state(profile)
+
+
+def _apply_order_branch_reducer(
+    *,
+    profile: dict[str, Any],
+    user_text: str,
+    intent: str,
+    active_order_name: str | None,
+    now: datetime,
+    separate_order_requested: bool,
+    correction_requested: bool,
+    previous_correction_requested: bool,
+    product_resolution_intent: str,
+    explicit_single_item_interest: str | None,
+    requested_items: list[dict[str, Any]],
+    qty: float | None,
+    extracted_uom: str | None,
+) -> None:
+    if separate_order_requested:
+        profile["separate_order_requested"] = True
+        profile["order_correction_status"] = "none"
+        profile["target_order_id"] = None
+        profile["correction_type"] = None
+    elif correction_requested:
+        profile["separate_order_requested"] = False
+
+    if (
+        correction_requested
+        and product_resolution_intent == "add_to_order"
+        and explicit_single_item_interest
+        and _substantive_product_tokens(explicit_single_item_interest)
+        and not requested_items
+        and qty is None
+    ):
+        profile["quantity"] = None
+        if not extracted_uom:
+            profile["uom"] = None
+
+    correction_context_continues = bool(
+        active_order_name
+        and previous_correction_requested
+        and not separate_order_requested
+        and intent in {"order_detail", "add_to_order", "confirm_order"}
+    )
+    if active_order_name and (correction_requested or correction_context_continues):
+        profile["order_correction_status"] = "requested"
+        profile["target_order_id"] = profile.get("target_order_id") or active_order_name
+        profile["correction_type"] = profile.get("correction_type") or _correction_type(user_text)
+        profile["correction_requested_at"] = profile.get("correction_requested_at") or now.isoformat()
+        profile["next_action"] = "clarify_order_correction"
+    elif separate_order_requested:
+        profile["next_action"] = "confirm_order" if _has_quantity_detail(profile) and _has_unit_detail(profile) else "ask_unit" if _has_quantity_detail(profile) else "ask_quantity"
+
+
+def _apply_commercial_signal_reducer(
+    *,
+    profile: dict[str, Any],
+    user_text: str,
+    behavior_class: str,
+    intent: str,
+    lead_config: dict[str, Any] | None,
+    now: datetime,
+) -> None:
+    if _signal_matches(user_text, "urgency", lead_config):
+        profile["urgency"] = "soon"
+    if _signal_matches(user_text, "delivery", lead_config):
+        profile["delivery_need"] = "mentioned"
+    if _signal_matches(user_text, "opt_out", lead_config):
+        profile["do_not_contact"] = True
+        profile["do_not_contact_reason"] = "customer_opt_out"
+        profile["lost_reason"] = "opt_out"
+    elif _signal_matches(user_text, "not_interested", lead_config):
+        profile["lost_reason"] = "not_interested"
+    if behavior_class == "price_sensitive" or _signal_matches(user_text, "price", lead_config) or _signal_matches(user_text, "quote", lead_config):
+        profile["price_sensitivity"] = True
+    if (_signal_matches(user_text, "quote", lead_config) or profile.get("price_sensitivity")) and profile.get("quote_status") in {None, "none"}:
+        profile["quote_status"] = "requested"
+        profile["quote_requested_at"] = now.isoformat()
+    if intent in {"confirm_order", "add_to_order"}:
+        profile["decision_status"] = "ready_to_buy"
+    elif intent in {"find_product", "browse_catalog"}:
+        profile["decision_status"] = "evaluating"
+
+
+def _apply_message_lifecycle_reducer(
+    *,
+    profile: dict[str, Any],
+    now: datetime,
+) -> None:
+    if profile.get("status") == "stalled" and not profile.get("lost_reason"):
+        profile["status"] = profile.get("previous_status_before_stall") or "new_lead"
+        profile["previous_status_before_stall"] = None
+    profile["last_customer_reply_at"] = now.isoformat()
+
+
 def _apply_message_signal_effects(
     *,
     profile: dict[str, Any],
@@ -1364,54 +1528,27 @@ def _apply_message_signal_effects(
         requested_items=requested_items,
     )
 
-    if requested_items:
-        assumed_uom = multi_item_default_uom(lead_config)
-        product_summary = "; ".join(str(item.get("item_text") or "") for item in requested_items if item.get("item_text"))
-        profile["requested_items"] = requested_items
-        profile["requested_item_count"] = len(requested_items)
-        profile["requested_items_have_quantities"] = True
-        profile["requested_items_need_uom_confirmation"] = not all(item.get("uom") for item in requested_items)
-        profile["requested_items_assumed_uom"] = None if not profile["requested_items_need_uom_confirmation"] else assumed_uom
-        profile["requested_items_uom_assumption_status"] = "confirmed" if not profile["requested_items_need_uom_confirmation"] else "likely"
-        if product_summary:
-            profile["product_interest"] = product_summary
-            _reset_catalog_lookup_state(profile)
-        if normalized_text and not profile.get("need"):
-            profile["need"] = normalized_text
-    elif profile.get("requested_items") and profile.get("requested_items_need_uom_confirmation"):
-        confirmed_uom = _confirmed_multi_item_uom(user_text, profile, lead_config)
-        if confirmed_uom:
-            _apply_multi_item_uom(profile, confirmed_uom)
-    elif not preserve_order_service_anchor and _should_replace_product_interest(
-        current_interest=_clean_text(profile.get("product_interest")),
+    requested_items_handled = _apply_requested_items_reducer(
+        profile=profile,
+        semantic_text=semantic_text,
         normalized_text=normalized_text,
-        current_priority=current_priority,
-        resolved_intent=product_resolution_intent,
-        extracted_uom=extracted_uom,
-        qty=qty,
-        config=lead_config,
-    ) and product_evidence:
-        normalized_interest = _normalize_single_item_interest(normalized_text, lead_config)
-        previous_interest = _clean_text(profile.get("product_interest"))
-        if previous_interest and normalized_interest and not _same_interest(normalized_interest, previous_interest):
-            _reset_product_qualification_state(
-                profile,
-                keep_quantity=qty is not None,
-                keep_uom=bool(extracted_uom),
-            )
-        profile["product_interest"] = normalized_interest
-        profile["need"] = profile.get("need") or normalized_interest
-        _reset_catalog_lookup_state(profile)
+        requested_items=requested_items,
+        lead_config=lead_config,
+    )
+    if not requested_items_handled:
+        _apply_product_anchor_reducer(
+            profile=profile,
+            preserve_order_service_anchor=preserve_order_service_anchor,
+            current_priority=current_priority,
+            product_resolution_intent=product_resolution_intent,
+            normalized_text=normalized_text,
+            extracted_uom=extracted_uom,
+            qty=qty,
+            product_evidence=product_evidence,
+            lead_config=lead_config,
+        )
     if intent == "order_detail" and normalized_text and not profile.get("need"):
         profile["need"] = normalized_text
-
-    if separate_order_requested:
-        profile["separate_order_requested"] = True
-        profile["order_correction_status"] = "none"
-        profile["target_order_id"] = None
-        profile["correction_type"] = None
-    elif correction_requested:
-        profile["separate_order_requested"] = False
 
     if _allow_quantity_slot_update(
         profile=profile,
@@ -1429,118 +1566,102 @@ def _apply_message_signal_effects(
         product_evidence=product_evidence,
     ) and not requested_items:
         profile["uom"] = extracted_uom
-    if (
-        correction_requested
-        and product_resolution_intent == "add_to_order"
-        and explicit_single_item_interest
-        and _substantive_product_tokens(explicit_single_item_interest)
-        and not requested_items
-        and qty is None
-    ):
-        profile["quantity"] = None
-        if not extracted_uom:
-            profile["uom"] = None
 
     _set_product_resolution_state(profile)
     _synchronize_need_anchor(profile, lead_config)
-    if _signal_matches(user_text, "urgency", lead_config):
-        profile["urgency"] = "soon"
-    if _signal_matches(user_text, "delivery", lead_config):
-        profile["delivery_need"] = "mentioned"
-    if _signal_matches(user_text, "opt_out", lead_config):
-        profile["do_not_contact"] = True
-        profile["do_not_contact_reason"] = "customer_opt_out"
-        profile["lost_reason"] = "opt_out"
-    elif _signal_matches(user_text, "not_interested", lead_config):
-        profile["lost_reason"] = "not_interested"
-    if behavior_class == "price_sensitive" or _signal_matches(user_text, "price", lead_config) or _signal_matches(user_text, "quote", lead_config):
-        profile["price_sensitivity"] = True
-    if (_signal_matches(user_text, "quote", lead_config) or profile.get("price_sensitivity")) and profile.get("quote_status") in {None, "none"}:
-        profile["quote_status"] = "requested"
-        profile["quote_requested_at"] = now.isoformat()
-    if intent in {"confirm_order", "add_to_order"}:
-        profile["decision_status"] = "ready_to_buy"
-    elif intent in {"find_product", "browse_catalog"}:
-        profile["decision_status"] = "evaluating"
-
-    correction_context_continues = bool(
-        active_order_name
-        and previous_correction_requested
-        and not separate_order_requested
-        and intent in {"order_detail", "add_to_order", "confirm_order"}
+    _apply_order_branch_reducer(
+        profile=profile,
+        user_text=user_text,
+        intent=intent,
+        active_order_name=active_order_name,
+        now=now,
+        separate_order_requested=separate_order_requested,
+        correction_requested=correction_requested,
+        previous_correction_requested=previous_correction_requested,
+        product_resolution_intent=product_resolution_intent,
+        explicit_single_item_interest=explicit_single_item_interest,
+        requested_items=requested_items,
+        qty=qty,
+        extracted_uom=extracted_uom,
     )
-    if active_order_name and (correction_requested or correction_context_continues):
-        profile["order_correction_status"] = "requested"
-        profile["target_order_id"] = profile.get("target_order_id") or active_order_name
-        profile["correction_type"] = profile.get("correction_type") or _correction_type(user_text)
-        profile["correction_requested_at"] = profile.get("correction_requested_at") or now.isoformat()
-        profile["next_action"] = "clarify_order_correction"
-    elif separate_order_requested:
-        profile["next_action"] = "confirm_order" if _has_quantity_detail(profile) and _has_unit_detail(profile) else "ask_unit" if _has_quantity_detail(profile) else "ask_quantity"
-    if profile.get("status") == "stalled" and not profile.get("lost_reason"):
-        profile["status"] = profile.get("previous_status_before_stall") or "new_lead"
-        profile["previous_status_before_stall"] = None
-    profile["last_customer_reply_at"] = now.isoformat()
+    _apply_commercial_signal_reducer(
+        profile=profile,
+        user_text=user_text,
+        behavior_class=behavior_class,
+        intent=intent,
+        lead_config=lead_config,
+        now=now,
+    )
+    _apply_message_lifecycle_reducer(
+        profile=profile,
+        now=now,
+    )
     return profile
 
 
-def _apply_tool_effects(
+def _apply_catalog_tool_reducer(
+    *,
+    profile: dict[str, Any],
+    inputs: dict[str, Any],
+    tool_result: dict[str, Any],
+    now: datetime,
+) -> None:
+    interest = normalize_catalog_lookup_query(inputs.get("item_name") or inputs.get("item_group"))
+    items = tool_result.get("items") if isinstance(tool_result, dict) else None
+    profile["catalog_lookup_query"] = interest
+    profile["catalog_lookup_at"] = now.isoformat()
+    if not interest and isinstance(items, list) and items and isinstance(items[0], dict):
+        interest = _clean_text(items[0].get("item_name") or items[0].get("display_item_name"))
+    current_interest = _clean_text(profile.get("product_interest"))
+    if interest and (not current_interest or _same_interest(interest, current_interest) or _refines_interest(interest, current_interest)):
+        profile["product_interest"] = interest
+        profile["need"] = profile.get("need") or interest
+    if isinstance(items, list):
+        profile["catalog_candidate_count"] = len(items)
+        profile["catalog_lookup_match_count"] = len(items)
+        profile["catalog_lookup_status"] = "found" if items else "no_match"
+        if len(items) == 1 and isinstance(items[0], dict):
+            profile["catalog_item_code"] = _clean_text(items[0].get("item_code"), limit=64)
+            profile["catalog_item_name"] = _clean_text(items[0].get("display_item_name") or items[0].get("item_name"), limit=160)
+        elif len(items) > 1:
+            profile["catalog_item_code"] = None
+            profile["catalog_item_name"] = None
+        else:
+            profile["catalog_item_code"] = None
+            profile["catalog_item_name"] = None
+    else:
+        profile["catalog_lookup_status"] = "error" if tool_result.get("error") else "unknown"
+        profile["catalog_lookup_match_count"] = 0
+
+
+def _apply_tool_item_payload_reducer(
+    *,
+    profile: dict[str, Any],
+    inputs: dict[str, Any],
+) -> None:
+    items = inputs.get("items")
+    if not (isinstance(items, list) and items):
+        return
+    first_item = items[0] if isinstance(items[0], dict) else {}
+    if first_item.get("qty"):
+        profile["quantity"] = first_item.get("qty")
+    if first_item.get("uom"):
+        profile["uom"] = canonical_uom(first_item.get("uom"), merged_uom_config(None, "single_item_uom_terms")) or first_item.get("uom")
+    if first_item.get("item_code"):
+        profile["catalog_item_code"] = str(first_item.get("item_code"))
+        profile["catalog_item_name"] = profile.get("catalog_item_name") or str(first_item.get("item_code"))
+        profile["product_interest"] = profile.get("catalog_item_name") or str(first_item.get("item_code"))
+        profile["need"] = profile.get("catalog_item_name") or profile.get("need") or profile.get("product_interest")
+
+
+def _apply_order_status_tool_reducer(
     *,
     profile: dict[str, Any],
     tool_name: str,
-    inputs: dict[str, Any],
     tool_result: dict[str, Any],
-    active_order_name: str | None,
+    resolved_active_order_name: str | None,
     now: datetime,
-) -> tuple[dict[str, Any], bool, str | None]:
-    customer_identified_from_tool = False
-    resolved_active_order_name = active_order_name
-
-    if tool_name == "get_product_catalog":
-        interest = normalize_catalog_lookup_query(inputs.get("item_name") or inputs.get("item_group"))
-        items = tool_result.get("items") if isinstance(tool_result, dict) else None
-        profile["catalog_lookup_query"] = interest
-        profile["catalog_lookup_at"] = now.isoformat()
-        if not interest and isinstance(items, list) and items and isinstance(items[0], dict):
-            interest = _clean_text(items[0].get("item_name") or items[0].get("display_item_name"))
-        current_interest = _clean_text(profile.get("product_interest"))
-        if interest and (not current_interest or _same_interest(interest, current_interest) or _refines_interest(interest, current_interest)):
-            profile["product_interest"] = interest
-            profile["need"] = profile.get("need") or interest
-        if isinstance(items, list):
-            profile["catalog_candidate_count"] = len(items)
-            profile["catalog_lookup_match_count"] = len(items)
-            profile["catalog_lookup_status"] = "found" if items else "no_match"
-            if len(items) == 1 and isinstance(items[0], dict):
-                profile["catalog_item_code"] = _clean_text(items[0].get("item_code"), limit=64)
-                profile["catalog_item_name"] = _clean_text(items[0].get("display_item_name") or items[0].get("item_name"), limit=160)
-            elif len(items) > 1:
-                profile["catalog_item_code"] = None
-                profile["catalog_item_name"] = None
-            else:
-                profile["catalog_item_code"] = None
-                profile["catalog_item_name"] = None
-        else:
-            profile["catalog_lookup_status"] = "error" if tool_result.get("error") else "unknown"
-            profile["catalog_lookup_match_count"] = 0
-
-    items = inputs.get("items")
-    if isinstance(items, list) and items:
-        first_item = items[0] if isinstance(items[0], dict) else {}
-        if first_item.get("qty"):
-            profile["quantity"] = first_item.get("qty")
-        if first_item.get("uom"):
-            profile["uom"] = canonical_uom(first_item.get("uom"), merged_uom_config(None, "single_item_uom_terms")) or first_item.get("uom")
-        if first_item.get("item_code"):
-            profile["catalog_item_code"] = str(first_item.get("item_code"))
-            profile["catalog_item_name"] = profile.get("catalog_item_name") or str(first_item.get("item_code"))
-            profile["product_interest"] = profile.get("catalog_item_name") or str(first_item.get("item_code"))
-            profile["need"] = profile.get("catalog_item_name") or profile.get("need") or profile.get("product_interest")
-
-    if tool_name == "register_buyer" and tool_result.get("erp_customer_id"):
-        customer_identified_from_tool = True
-    if tool_name in {"create_sales_order", "update_sales_order"} and tool_result.get("name"):
-        resolved_active_order_name = str(tool_result.get("name"))
+) -> None:
     if tool_name == "get_sales_order_status" and not tool_result.get("error"):
         profile["target_order_id"] = tool_result.get("sales_order_name") or profile.get("target_order_id") or resolved_active_order_name
         profile["active_order_state"] = tool_result.get("order_state")
@@ -1555,20 +1676,34 @@ def _apply_tool_effects(
         profile["active_order_checked_at"] = now.isoformat()
         profile["order_correction_status"] = "requested"
         profile["next_action"] = "handoff_manager"
-    if tool_name == "get_item_availability" and not tool_result.get("error"):
-        profile["availability_item_code"] = _clean_text(tool_result.get("item_code"), limit=64)
-        profile["availability_item_name"] = _clean_text(tool_result.get("item_name"), limit=160)
-        profile["availability_in_stock"] = tool_result.get("in_stock")
-        profile["availability_total_available_qty"] = _first_number(tool_result.get("total_available_qty"))
-        profile["availability_stock_uom"] = _clean_text(tool_result.get("stock_uom"), limit=32)
-        profile["availability_warehouse"] = _clean_text(tool_result.get("effective_warehouse") or tool_result.get("requested_warehouse"), limit=160)
-        profile["availability_default_warehouse"] = _clean_text(tool_result.get("default_warehouse"), limit=160)
-        known_warehouses = tool_result.get("known_warehouses")
-        profile["availability_known_warehouses"] = [str(item).strip() for item in known_warehouses if str(item).strip()] if isinstance(known_warehouses, list) else []
-        profile["availability_needs_warehouse_selection"] = bool(tool_result.get("needs_warehouse_selection"))
-        profile["availability_checked_at"] = now.isoformat()
-    if tool_name == "create_invoice" and tool_result.get("name"):
-        profile["status"] = "won"
+
+
+def _apply_availability_tool_reducer(
+    *,
+    profile: dict[str, Any],
+    tool_result: dict[str, Any],
+    now: datetime,
+) -> None:
+    profile["availability_item_code"] = _clean_text(tool_result.get("item_code"), limit=64)
+    profile["availability_item_name"] = _clean_text(tool_result.get("item_name"), limit=160)
+    profile["availability_in_stock"] = tool_result.get("in_stock")
+    profile["availability_total_available_qty"] = _first_number(tool_result.get("total_available_qty"))
+    profile["availability_stock_uom"] = _clean_text(tool_result.get("stock_uom"), limit=32)
+    profile["availability_warehouse"] = _clean_text(tool_result.get("effective_warehouse") or tool_result.get("requested_warehouse"), limit=160)
+    profile["availability_default_warehouse"] = _clean_text(tool_result.get("default_warehouse"), limit=160)
+    known_warehouses = tool_result.get("known_warehouses")
+    profile["availability_known_warehouses"] = [str(item).strip() for item in known_warehouses if str(item).strip()] if isinstance(known_warehouses, list) else []
+    profile["availability_needs_warehouse_selection"] = bool(tool_result.get("needs_warehouse_selection"))
+    profile["availability_checked_at"] = now.isoformat()
+
+
+def _apply_order_write_tool_reducer(
+    *,
+    profile: dict[str, Any],
+    tool_name: str,
+    tool_result: dict[str, Any],
+    now: datetime,
+) -> None:
     if tool_name == "create_sales_order" and tool_result.get("name"):
         profile["target_order_id"] = _clean_text(tool_result.get("name"), limit=120) or profile.get("target_order_id")
         profile["separate_order_requested"] = False
@@ -1591,20 +1726,85 @@ def _apply_tool_effects(
         profile["active_order_checked_at"] = now.isoformat()
         profile["order_total"] = _first_number(tool_result.get("grand_total"), tool_result.get("rounded_total"), tool_result.get("total"), tool_result.get("net_total"), tool_result.get("base_grand_total")) or profile.get("order_total")
         profile["currency"] = _first_text(tool_result.get("currency"), tool_result.get("company_currency"), limit=16) or profile.get("currency")
+
+
+def _apply_quote_tool_reducer(
+    *,
+    profile: dict[str, Any],
+    tool_result: dict[str, Any],
+    now: datetime,
+) -> None:
+    profile["quote_id"] = tool_result.get("name")
+    profile["quote_total"] = _first_number(tool_result.get("grand_total"), tool_result.get("rounded_total"), tool_result.get("total"), tool_result.get("net_total"), tool_result.get("base_grand_total"))
+    profile["quote_currency"] = _first_text(tool_result.get("currency"), tool_result.get("company_currency"), limit=16)
+    profile["quote_pdf_url"] = _first_text(tool_result.get("quote_pdf_url"), tool_result.get("pdf_url"), tool_result.get("print_url"), limit=500)
+    profile["quote_status"] = "sent" if profile.get("quote_pdf_url") else "prepared"
+    if profile["quote_status"] == "sent":
+        profile["quote_sent_at"] = profile.get("quote_sent_at") or now.isoformat()
+    else:
+        profile["quote_prepared_at"] = profile.get("quote_prepared_at") or now.isoformat()
+    profile["expected_revenue"] = profile.get("quote_total")
+
+
+def _apply_tool_effects(
+    *,
+    profile: dict[str, Any],
+    tool_name: str,
+    inputs: dict[str, Any],
+    tool_result: dict[str, Any],
+    active_order_name: str | None,
+    now: datetime,
+) -> tuple[dict[str, Any], bool, str | None]:
+    customer_identified_from_tool = False
+    resolved_active_order_name = active_order_name
+
+    if tool_name == "get_product_catalog":
+        _apply_catalog_tool_reducer(
+            profile=profile,
+            inputs=inputs,
+            tool_result=tool_result,
+            now=now,
+        )
+
+    _apply_tool_item_payload_reducer(
+        profile=profile,
+        inputs=inputs,
+    )
+
+    if tool_name == "register_buyer" and tool_result.get("erp_customer_id"):
+        customer_identified_from_tool = True
+    if tool_name in {"create_sales_order", "update_sales_order"} and tool_result.get("name"):
+        resolved_active_order_name = str(tool_result.get("name"))
+    _apply_order_status_tool_reducer(
+        profile=profile,
+        tool_name=tool_name,
+        tool_result=tool_result,
+        resolved_active_order_name=resolved_active_order_name,
+        now=now,
+    )
+    if tool_name == "get_item_availability" and not tool_result.get("error"):
+        _apply_availability_tool_reducer(
+            profile=profile,
+            tool_result=tool_result,
+            now=now,
+        )
+    if tool_name == "create_invoice" and tool_result.get("name"):
+        profile["status"] = "won"
+    _apply_order_write_tool_reducer(
+        profile=profile,
+        tool_name=tool_name,
+        tool_result=tool_result,
+        now=now,
+    )
     if tool_name == "create_invoice" and tool_result.get("name"):
         profile["won_revenue"] = _first_number(tool_result.get("grand_total"), tool_result.get("rounded_total"), tool_result.get("total"), tool_result.get("net_total"), tool_result.get("base_grand_total")) or profile.get("won_revenue") or profile.get("order_total")
         profile["currency"] = _first_text(tool_result.get("currency"), tool_result.get("company_currency"), limit=16) or profile.get("currency")
     if tool_name in {"create_quotation", "send_quote", "create_quote"} and tool_result.get("name"):
-        profile["quote_id"] = tool_result.get("name")
-        profile["quote_total"] = _first_number(tool_result.get("grand_total"), tool_result.get("rounded_total"), tool_result.get("total"), tool_result.get("net_total"), tool_result.get("base_grand_total"))
-        profile["quote_currency"] = _first_text(tool_result.get("currency"), tool_result.get("company_currency"), limit=16)
-        profile["quote_pdf_url"] = _first_text(tool_result.get("quote_pdf_url"), tool_result.get("pdf_url"), tool_result.get("print_url"), limit=500)
-        profile["quote_status"] = "sent" if profile.get("quote_pdf_url") else "prepared"
-        if profile["quote_status"] == "sent":
-            profile["quote_sent_at"] = profile.get("quote_sent_at") or now.isoformat()
-        else:
-            profile["quote_prepared_at"] = profile.get("quote_prepared_at") or now.isoformat()
-        profile["expected_revenue"] = profile.get("quote_total")
+        _apply_quote_tool_reducer(
+            profile=profile,
+            tool_result=tool_result,
+            now=now,
+        )
 
     _set_product_resolution_state(profile)
     _synchronize_need_anchor(profile)
