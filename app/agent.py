@@ -629,6 +629,11 @@ def _clean_company_candidate(text: str) -> str | None:
     return _clean_company_candidate_text(text)
 
 
+def _normalize_company_match_text(value: str | None) -> str:
+    normalized = re.sub(r"[\W_~]+", " ", str(value or "").casefold(), flags=re.UNICODE)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
 def _select_company_candidate_query(text: str, candidates: list[dict[str, Any]] | None) -> str | None:
     raw = str(text or "").strip()
     if not raw or not isinstance(candidates, list):
@@ -653,6 +658,36 @@ def _select_company_candidate_query(text: str, candidates: list[dict[str, Any]] 
             return company_number
         if company_name and normalized == company_name.casefold():
             return company_number or company_name
+
+    cleaned_query = _clean_company_candidate(raw) or raw
+    normalized_query = _normalize_company_match_text(cleaned_query)
+    if not normalized_query:
+        return None
+
+    query_tokens = [token for token in normalized_query.split(" ") if token]
+    narrowed: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        company_number = str(candidate.get("company_number") or "").strip()
+        company_name = str(candidate.get("company_name") or "").strip()
+        normalized_name = _normalize_company_match_text(company_name)
+        if not normalized_name:
+            continue
+        if normalized_query in normalized_name:
+            narrowed.append(candidate)
+            continue
+        if query_tokens and all(token in normalized_name for token in query_tokens):
+            narrowed.append(candidate)
+            continue
+        if company_number and normalized_query == company_number:
+            narrowed.append(candidate)
+
+    if len(narrowed) == 1:
+        candidate = narrowed[0]
+        company_number = str(candidate.get("company_number") or "").strip()
+        company_name = str(candidate.get("company_name") or "").strip()
+        return company_number or company_name or None
     return None
 
 
