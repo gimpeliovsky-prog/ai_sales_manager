@@ -4,6 +4,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from app.conversation_contexts import set_active_lead_profile
 from app.i18n import template as i18n_template, text as i18n_text
 from app.lead_management import normalize_lead_profile, normalize_telegram_username
 from app.lead_runtime_config import lead_config_from_ai_policy
@@ -344,7 +345,7 @@ def mark_followup_attempt(session: dict[str, Any], delivery: dict[str, Any]) -> 
         "channel": delivery.get("channel"),
         "via": delivery.get("via"),
     }
-    session["lead_profile"] = profile
+    set_active_lead_profile(session, profile)
 
 
 def mark_sales_owner_notification(session: dict[str, Any], delivery: dict[str, Any]) -> None:
@@ -357,7 +358,7 @@ def mark_sales_owner_notification(session: dict[str, Any], delivery: dict[str, A
             "channel": delivery.get("channel"),
             "sales_owner_telegram_username": delivery.get("sales_owner_telegram_username"),
         }
-        session["lead_profile"] = profile
+        set_active_lead_profile(session, profile)
         return
     profile["sales_owner_status"] = "delivered" if delivery.get("sent") else "delivery_failed"
     profile["sales_owner_notified_at"] = datetime.now(UTC).isoformat()
@@ -367,5 +368,5 @@ def mark_sales_owner_notification(session: dict[str, Any], delivery: dict[str, A
         "channel": delivery.get("channel"),
         "sales_owner_telegram_username": delivery.get("sales_owner_telegram_username"),
     }
-    session["lead_profile"] = profile
+    set_active_lead_profile(session, profile)
 

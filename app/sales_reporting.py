@@ -8,6 +8,7 @@ from app.conversation_contexts import (
     active_context,
     active_context_type,
     active_deal_state,
+    active_lead_profile,
     active_progress_state,
     active_related_order_id,
     active_signal_state,
@@ -65,7 +66,7 @@ def _float(value: Any) -> float:
 
 
 def lead_snapshot(*, channel: str, uid: str, session: dict[str, Any]) -> dict[str, Any]:
-    profile = normalize_lead_profile(session.get("lead_profile"))
+    profile = normalize_lead_profile(active_lead_profile(session))
     active_ctx = active_context(session)
     deal_state = active_deal_state(session)
     progress_state = active_progress_state(session)

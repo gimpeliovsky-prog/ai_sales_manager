@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Callable
 
 from app.lead_management import normalize_lead_profile
 
@@ -432,6 +432,59 @@ def active_signal_state(session: dict[str, Any]) -> dict[str, Any]:
     context = active_context(session)
     value = context.get("signal_state")
     return value if isinstance(value, dict) else {}
+
+
+def refresh_active_context_state(
+    session: dict[str, Any],
+    *,
+    event_type: str | None = None,
+    event_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    _bootstrap_contexts_from_legacy(session)
+    context = _require_active_context(session)
+    _copy_session_state_into_context(session, context)
+    sync_legacy_from_active_context(session)
+    if event_type:
+        _append_context_event(
+            session,
+            event_type=event_type,
+            context_id=str(context.get("context_id") or "").strip() or None,
+            payload=event_payload,
+        )
+    return session
+
+
+def set_active_lead_profile(
+    session: dict[str, Any],
+    lead_profile: dict[str, Any] | None,
+    *,
+    event_type: str | None = None,
+    event_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    session["lead_profile"] = normalize_lead_profile(lead_profile)
+    refresh_active_context_state(
+        session,
+        event_type=event_type,
+        event_payload=event_payload,
+    )
+    return normalize_lead_profile(session.get("lead_profile"))
+
+
+def mutate_active_lead_profile(
+    session: dict[str, Any],
+    mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
+    *,
+    event_type: str | None = None,
+    event_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    current_profile = normalize_lead_profile(session.get("lead_profile"))
+    updated_profile = mutator(current_profile)
+    return set_active_lead_profile(
+        session,
+        updated_profile if isinstance(updated_profile, dict) else current_profile,
+        event_type=event_type,
+        event_payload=event_payload,
+    )
 
 
 def sync_legacy_to_active_context(session: dict[str, Any]) -> dict[str, Any]:

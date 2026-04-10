@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 
 from app.config import get_settings
+from app.conversation_contexts import set_active_lead_profile
 from app.lead_management import apply_lead_merge, apply_manual_close, apply_order_correction_update, apply_quote_update, record_merged_duplicate
 from app.sales_quality import update_session_quality
 from app.sales_lead_repository import get_sales_lead_repository
@@ -269,7 +270,7 @@ def _update_persisted_lead_record(
     now_iso: str,
 ) -> dict[str, Any]:
     session = dict(record.get("session_context") if isinstance(record.get("session_context"), dict) else {})
-    session["lead_profile"] = profile
+    set_active_lead_profile(session, profile)
     session["lead_timeline"] = record.get("timeline") if isinstance(record.get("timeline"), list) else []
     append_lead_timeline_event(
         session,
@@ -327,7 +328,7 @@ def _update_persisted_quote_record(
     now_iso: str,
 ) -> dict[str, Any]:
     session = dict(record.get("session_context") if isinstance(record.get("session_context"), dict) else {})
-    session["lead_profile"] = profile
+    set_active_lead_profile(session, profile)
     session["lead_timeline"] = record.get("timeline") if isinstance(record.get("timeline"), list) else []
     append_lead_timeline_event(
         session,
@@ -390,7 +391,7 @@ async def _update_quote_status(
     resolved = await resolve_lead_session(lead_id)
     if resolved:
         channel, uid, session = resolved
-        session["lead_profile"] = apply_quote_update(
+        set_active_lead_profile(session, apply_quote_update(
             current_profile=session.get("lead_profile"),
             quote_status=quote_status,
             actor_id=actor_id,
@@ -399,7 +400,7 @@ async def _update_quote_status(
             quote_currency=data.get("quote_currency") or data.get("currency"),
             quote_pdf_url=data.get("quote_pdf_url") or data.get("pdf_url"),
             comment=data.get("comment"),
-        )
+        ))
         append_lead_timeline_event(
             session,
             event_type=f"quote_{quote_status}",
@@ -468,7 +469,7 @@ def _update_persisted_profile_record(
     now_iso: str,
 ) -> dict[str, Any]:
     session = dict(record.get("session_context") if isinstance(record.get("session_context"), dict) else {})
-    session["lead_profile"] = profile
+    set_active_lead_profile(session, profile)
     session["lead_timeline"] = record.get("timeline") if isinstance(record.get("timeline"), list) else []
     append_lead_timeline_event(session, event_type=event_type, payload=payload, actor=actor_id)
     lead = dict(record.get("lead") if isinstance(record.get("lead"), dict) else {})
@@ -502,14 +503,14 @@ async def _update_order_correction(
     resolved = await resolve_lead_session(lead_id)
     if resolved:
         channel, uid, session = resolved
-        session["lead_profile"] = apply_order_correction_update(
+        set_active_lead_profile(session, apply_order_correction_update(
             current_profile=session.get("lead_profile"),
             correction_status=correction_status,
             target_order_id=data.get("target_order_id") or session.get("last_sales_order_name"),
             correction_type=data.get("correction_type"),
             actor_id=actor_id,
             comment=data.get("comment"),
-        )
+        ))
         append_lead_timeline_event(session, event_type=f"order_correction_{correction_status}", payload=event_payload, actor=actor_id)
         await save_session_snapshot(channel, uid, session)
         return {
@@ -567,7 +568,7 @@ async def manually_close_lead(
     resolved = await resolve_lead_session(lead_id)
     if resolved:
         channel, uid, session = resolved
-        session["lead_profile"] = apply_manual_close(
+        set_active_lead_profile(session, apply_manual_close(
             current_profile=session.get("lead_profile"),
             outcome=outcome,
             actor_id=actor_id,
@@ -576,7 +577,7 @@ async def manually_close_lead(
             order_total=data.get("order_total"),
             won_revenue=data.get("won_revenue"),
             currency=data.get("currency"),
-        )
+        ))
         append_lead_timeline_event(
             session,
             event_type=f"lead_manually_closed_{outcome}",

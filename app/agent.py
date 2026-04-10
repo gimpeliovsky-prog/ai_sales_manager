@@ -30,7 +30,9 @@ from app.conversation_contexts import (
     active_lead_profile,
     active_related_order_id,
     active_signal_state,
+    mutate_active_lead_profile,
     reconcile_contexts_after_state_update,
+    set_active_lead_profile,
 )
 from app.config import get_settings
 from app.i18n import text as i18n_text
@@ -375,7 +377,7 @@ async def _apply_lead_dedupe(
     match = detect_duplicate_lead(current=current, candidates=candidates, window_days=window_days)
     if not match:
         profile["dedupe_checked_at"] = datetime.now(UTC).isoformat()
-        session["lead_profile"] = profile
+        set_active_lead_profile(session, profile)
         return
     profile.update(
         {
@@ -386,7 +388,7 @@ async def _apply_lead_dedupe(
             "merged_into_lead_id": match.get("duplicate_of_lead_id"),
         }
     )
-    session["lead_profile"] = profile
+    set_active_lead_profile(session, profile)
     append_lead_timeline_event(
         session,
         event_type="lead_duplicate_detected",
@@ -456,7 +458,7 @@ async def _emit_sales_event_if_changed(
             payload=_lead_event_payload(session, previous_profile),
         )
     profile["last_sales_event"] = event_type or alert_event_types[-1]
-    session["lead_profile"] = profile
+    set_active_lead_profile(session, profile)
     if event_type:
         append_lead_timeline_event(
             session,
@@ -1131,7 +1133,7 @@ async def _maybe_prefetch_catalog_context(
         parsed_result = {"raw_result": result_str, "error": "invalid_prefetch_result"}
 
     previous_tool_lead_profile = normalize_lead_profile(session.get("lead_profile"))
-    session["lead_profile"] = update_lead_profile_from_tool(
+    set_active_lead_profile(session, update_lead_profile_from_tool(
         current_profile=previous_tool_lead_profile,
         tool_name="get_product_catalog",
         inputs=inputs,
@@ -1139,7 +1141,7 @@ async def _maybe_prefetch_catalog_context(
         stage=session.get("stage"),
         customer_identified=bool(session.get("erp_customer_id")),
         active_order_name=session.get("last_sales_order_name"),
-    )
+    ))
     await save_session_snapshot(channel, channel_uid, session)
     await _emit_sales_event_if_changed(
         lc=lc,
@@ -1234,7 +1236,7 @@ async def _maybe_prefetch_availability_context(
         parsed_result = {"raw_result": result_str, "error": "invalid_availability_prefetch_result"}
 
     previous_tool_lead_profile = normalize_lead_profile(session.get("lead_profile"))
-    session["lead_profile"] = update_lead_profile_from_tool(
+    set_active_lead_profile(session, update_lead_profile_from_tool(
         current_profile=previous_tool_lead_profile,
         tool_name="get_item_availability",
         inputs=inputs,
@@ -1242,7 +1244,7 @@ async def _maybe_prefetch_availability_context(
         stage=session.get("stage"),
         customer_identified=bool(session.get("erp_customer_id")),
         active_order_name=session.get("last_sales_order_name"),
-    )
+    ))
     await save_session_snapshot(channel, channel_uid, session)
     await _emit_sales_event_if_changed(
         lc=lc,
@@ -1347,7 +1349,7 @@ async def _maybe_prefetch_order_status_context(
         parsed_result = {"raw_result": result_str, "error": "invalid_order_status_prefetch_result"}
 
     previous_tool_lead_profile = normalize_lead_profile(session.get("lead_profile"))
-    session["lead_profile"] = update_lead_profile_from_tool(
+    set_active_lead_profile(session, update_lead_profile_from_tool(
         current_profile=previous_tool_lead_profile,
         tool_name="get_sales_order_status",
         inputs=inputs,
@@ -1355,7 +1357,7 @@ async def _maybe_prefetch_order_status_context(
         stage=session.get("stage"),
         customer_identified=bool(session.get("erp_customer_id")),
         active_order_name=active_order_name,
-    )
+    ))
     await save_session_snapshot(channel, channel_uid, session)
     await _emit_sales_event_if_changed(
         lc=lc,
@@ -1809,19 +1811,22 @@ async def _process_message_result_locked(
         merged_channel_context = dict(session.get("channel_context") or {})
         merged_channel_context.update(channel_context)
         session["channel_context"] = merged_channel_context
-    session["lead_profile"] = ensure_lead_identity(
+    set_active_lead_profile(session, ensure_lead_identity(
         current_profile=session.get("lead_profile"),
         company_code=company_code,
         channel=channel,
         channel_uid=channel_uid,
-    )
+    ))
     if _playbook_version(tenant):
-        session["lead_profile"]["playbook_version"] = _playbook_version(tenant)
-    session["lead_profile"] = update_lead_profile_source(
+        mutate_active_lead_profile(
+            session,
+            lambda profile: {**profile, "playbook_version": _playbook_version(tenant)},
+        )
+    set_active_lead_profile(session, update_lead_profile_source(
         current_profile=session.get("lead_profile"),
         channel=channel,
         channel_context=session.get("channel_context") if isinstance(session.get("channel_context"), dict) else {},
-    )
+    ))
     default_lang = tenant.get("ai_language", "ru")
     current_lang, lang_to_lock = resolve_conversation_language(
         locked_lang=session.get("lang"),
@@ -1831,11 +1836,11 @@ async def _process_message_result_locked(
     if lang_to_lock:
         session["lang"] = lang_to_lock
     previous_stalled_profile = normalize_lead_profile(session.get("lead_profile"))
-    session["lead_profile"] = mark_stalled_if_needed(
+    set_active_lead_profile(session, mark_stalled_if_needed(
         current_profile=previous_stalled_profile,
         last_interaction_at=session.get("last_interaction_at"),
         idle_after=_lead_idle_after(tenant),
-    )
+    ))
     await save_session_snapshot(channel, channel_uid, session)
     await _emit_sales_event_if_changed(
         lc=lc,
@@ -2272,7 +2277,7 @@ async def _process_message_result_locked(
     if behavior_class == "silent_or_low_signal" and intent == "find_product":
         intent = "low_signal"
         intent_confidence = max(intent_confidence, behavior_confidence)
-    session["lead_profile"] = update_lead_profile_from_message(
+    set_active_lead_profile(session, update_lead_profile_from_message(
         current_profile=seeded_profile,
         user_text=user_text,
         stage=session.get("stage"),
@@ -2282,7 +2287,7 @@ async def _process_message_result_locked(
         active_order_name=active_order_name,
         lead_config=_lead_management_config(tenant),
         llm_state_update=llm_state_result if use_llm_state else None,
-    )
+    ))
     session.update(
         derive_conversation_state(
             session=session,
@@ -2888,7 +2893,7 @@ async def _process_message_result_locked(
                     )
                 advance_stage_after_tool(session, tool_name, parsed_result)
                 previous_tool_lead_profile = normalize_lead_profile(session.get("lead_profile"))
-                session["lead_profile"] = update_lead_profile_from_tool(
+                set_active_lead_profile(session, update_lead_profile_from_tool(
                     current_profile=previous_tool_lead_profile,
                     tool_name=tool_name,
                     inputs=inputs,
@@ -2896,7 +2901,7 @@ async def _process_message_result_locked(
                     stage=session.get("stage"),
                     customer_identified=bool(session.get("erp_customer_id")),
                     active_order_name=session.get("last_sales_order_name"),
-                )
+                ))
                 await save_session_snapshot(channel, channel_uid, session)
                 await _emit_sales_event_if_changed(
                     lc=lc,

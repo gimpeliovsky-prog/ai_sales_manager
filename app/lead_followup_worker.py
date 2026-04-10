@@ -19,6 +19,7 @@ from app.outbound_channels import mark_followup_attempt, mark_sales_owner_notifi
 from app.sales_governance import evaluate_sla_breaches, record_new_sla_breaches
 from app.sales_quality import update_session_quality
 from app.sales_timeline import append_lead_timeline_event
+from app.conversation_contexts import set_active_lead_profile
 from app.session_store import iter_session_snapshots, save_session_snapshot
 
 logger = logging.getLogger(__name__)
@@ -125,11 +126,11 @@ class LeadFollowupWorker:
                     await save_session_snapshot(channel, uid, session)
                     processed += 1
                 continue
-            session["lead_profile"] = mark_stalled_if_needed(
+            set_active_lead_profile(session, mark_stalled_if_needed(
                 current_profile=previous_profile,
                 last_interaction_at=session.get("last_interaction_at"),
                 idle_after=self._stalled_after(lead_config),
-            )
+            ))
             current_profile = normalize_lead_profile(session.get("lead_profile"))
             if current_profile.get("status") != "stalled" or previous_profile.get("status") == "stalled":
                 if session_changed:
@@ -137,7 +138,7 @@ class LeadFollowupWorker:
                     processed += 1
                 continue
             current_profile["last_sales_event"] = "lead_stalled"
-            session["lead_profile"] = current_profile
+            set_active_lead_profile(session, current_profile)
             append_lead_timeline_event(
                 session,
                 event_type="lead_stalled",
@@ -156,10 +157,10 @@ class LeadFollowupWorker:
                     lead_config=lead_config,
                 )
             else:
-                session["lead_profile"] = mark_lost_if_followup_exhausted(
+                set_active_lead_profile(session, mark_lost_if_followup_exhausted(
                     current_profile=current_profile,
                     reason=blocked_reason,
-                )
+                ))
                 delivery = {"sent": False, "status": blocked_reason or "followup_blocked", "channel": channel}
             mark_followup_attempt(session, delivery)
             append_lead_timeline_event(

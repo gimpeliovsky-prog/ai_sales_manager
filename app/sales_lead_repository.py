@@ -5,6 +5,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
+from app.conversation_contexts import active_lead_profile
 from app.sales_reporting import lead_snapshot
 
 logger = logging.getLogger(__name__)
@@ -182,7 +183,7 @@ def _compact_session_context(session: dict[str, Any]) -> dict[str, Any]:
 
 
 def compact_lead_record(*, channel: str, uid: str, session: dict[str, Any]) -> dict[str, Any] | None:
-    profile = session.get("lead_profile") if isinstance(session.get("lead_profile"), dict) else {}
+    profile = active_lead_profile(session)
     lead_id = str(profile.get("lead_id") or "").strip()
     company_code = str(session.get("company_code") or "").strip()
     if not lead_id or not company_code:

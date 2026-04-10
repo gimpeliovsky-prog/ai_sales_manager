@@ -7,7 +7,10 @@ from app.conversation_contexts import (
     context_events,
     create_context,
     ensure_session_contexts,
+    mutate_active_lead_profile,
     reconcile_contexts_after_state_update,
+    refresh_active_context_state,
+    set_active_lead_profile,
     sync_legacy_to_active_context,
 )
 
@@ -207,6 +210,77 @@ class ConversationContextsTests(unittest.TestCase):
         active = session["contexts"][session["active_context_id"]]
         self.assertEqual(active["context_type"], "service_request")
         self.assertEqual(active["related_order_id"], "SO-999")
+
+    def test_set_active_lead_profile_updates_context_layers_immediately(self) -> None:
+        session = {
+            "stage": "discover",
+            "stage_confidence": 0.84,
+            "behavior_class": "explorer",
+            "behavior_confidence": 0.73,
+            "last_intent": "browse_catalog",
+            "last_intent_confidence": 0.79,
+            "signal_type": "deal_progress",
+            "signal_confidence": 0.8,
+            "signal_preserves_deal": True,
+            "signal_emotion": "neutral",
+            "lead_profile": {"status": "new_lead", "product_interest": "laptop"},
+        }
+        ensure_session_contexts(session)
+        set_active_lead_profile(
+            session,
+            {"status": "qualified", "product_interest": "monitor", "quantity": 3},
+            event_type="lead_profile_mutated",
+            event_payload={"source": "test"},
+        )
+        self.assertEqual(session["lead_profile"]["product_interest"], "monitor")
+        self.assertEqual(active_deal_state(session)["product_interest"], "monitor")
+        self.assertEqual(active_deal_state(session)["quantity"], 3)
+        self.assertEqual(active_progress_state(session)["status"], "qualified")
+        self.assertTrue(any(event.get("event_type") == "lead_profile_mutated" for event in context_events(session)))
+
+    def test_refresh_active_context_state_captures_stage_and_signal_changes(self) -> None:
+        session = {
+            "stage": "discover",
+            "stage_confidence": 0.7,
+            "behavior_class": "explorer",
+            "behavior_confidence": 0.65,
+            "last_intent": "browse_catalog",
+            "last_intent_confidence": 0.75,
+            "signal_type": "deal_progress",
+            "signal_confidence": 0.7,
+            "signal_preserves_deal": True,
+            "signal_emotion": "neutral",
+            "lead_profile": {"status": "new_lead", "product_interest": "laptop"},
+        }
+        ensure_session_contexts(session)
+        session["stage"] = "service"
+        session["signal_type"] = "service_request"
+        session["signal_emotion"] = "impatient"
+        refresh_active_context_state(
+            session,
+            event_type="context_state_refreshed",
+            event_payload={"source": "test"},
+        )
+        self.assertEqual(active_progress_state(session)["stage"], "service")
+        self.assertEqual(active_signal_state(session)["type"], "service_request")
+        self.assertEqual(active_signal_state(session)["emotion"], "impatient")
+        self.assertTrue(any(event.get("event_type") == "context_state_refreshed" for event in context_events(session)))
+
+    def test_mutate_active_lead_profile_keeps_context_in_sync(self) -> None:
+        session = {
+            "stage": "discover",
+            "behavior_class": "explorer",
+            "last_intent": "browse_catalog",
+            "lead_profile": {"status": "new_lead", "product_interest": "laptop", "quote_status": "none"},
+        }
+        ensure_session_contexts(session)
+        mutate_active_lead_profile(
+            session,
+            lambda profile: {**profile, "quote_status": "requested", "next_action": "quote_or_clarify_price"},
+        )
+        self.assertEqual(session["lead_profile"]["quote_status"], "requested")
+        self.assertEqual(active_progress_state(session)["quote_status"], "requested")
+        self.assertEqual(active_progress_state(session)["next_action"], "quote_or_clarify_price")
 
 
 if __name__ == "__main__":
