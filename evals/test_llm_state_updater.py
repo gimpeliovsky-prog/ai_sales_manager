@@ -39,6 +39,13 @@ class LlmStateUpdaterTests(unittest.TestCase):
         self.assertFalse(parsed["valid"])
         self.assertIsNone(parsed["signal_type"])
 
+    def test_parse_state_update_accepts_catalog_search_term(self) -> None:
+        parsed = parse_llm_state_update(
+            '{"intent":"find_product","behavior_class":"explorer","confidence":0.82,"catalog_search_term":"gaming laptop","lead_patch":{"product_interest":"gaming laptop"}}'
+        )
+        self.assertTrue(parsed["valid"])
+        self.assertEqual(parsed["catalog_search_term"], "gaming laptop")
+
 
 if __name__ == "__main__":
     unittest.main()

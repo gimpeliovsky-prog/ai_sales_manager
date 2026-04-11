@@ -1138,6 +1138,7 @@ async def _maybe_prefetch_catalog_context(
     tenant: dict[str, Any],
     session: dict[str, Any],
     intent: str | None,
+    preferred_search_term: str | None = None,
 ) -> str | None:
     lead_profile = normalize_lead_profile(active_lead_profile(session))
     if should_prefetch_catalog_preview(lead_profile=lead_profile, intent=intent):
@@ -1166,7 +1167,7 @@ async def _maybe_prefetch_catalog_context(
         return build_catalog_preview_context(preview_result if isinstance(preview_result, dict) else {})
     if not should_prefetch_catalog_options(lead_profile=lead_profile, intent=intent):
         return None
-    search_term = catalog_prefetch_search_term(lead_profile)
+    search_term = catalog_prefetch_search_term(lead_profile, preferred_search_term=preferred_search_term)
     if not search_term:
         return None
 
@@ -1750,7 +1751,7 @@ async def _classify_state_with_llm(
         "model": model,
         "instructions": (
             "Classify the customer's latest message for sales-runtime state update. "
-            "Return only compact JSON with keys: intent, signal_type, signal_emotion, signal_preserves_deal, behavior_class, confidence, next_action, lead_patch, reason. "
+            "Return only compact JSON with keys: intent, signal_type, signal_emotion, signal_preserves_deal, behavior_class, confidence, next_action, lead_patch, catalog_search_term, reason. "
             "intent must be one of: low_signal, small_talk, find_product, browse_catalog, order_detail, confirm_order, add_to_order, service_request, human_handoff. "
             "signal_type must be one of: deal_progress, small_talk, price_objection, discount_request, analogs_request, comparison_request, delivery_question, availability_question, topic_shift, frustration, confirmation, service_request, stalling, resume_previous_context, low_signal, handoff_request. "
             "signal_emotion must be one of: neutral, positive, impatient, skeptical. "
@@ -1758,6 +1759,8 @@ async def _classify_state_with_llm(
             "behavior_class must be one of: direct_buyer, explorer, unclear_request, price_sensitive, frustrated, service_request, returning_customer, silent_or_low_signal. "
             "next_action must be one of: handoff_manager, fulfill_service_request, ask_need, show_matching_options, select_specific_item, ask_quantity, ask_unit, ask_delivery_timing, ask_contact, quote_or_clarify_price, confirm_order, recommend_next_step. "
             "lead_patch may include only these keys when clearly supported by the message and context: product_interest, quantity, uom, urgency, delivery_need, price_sensitivity, decision_status. "
+            "catalog_search_term must be the minimal catalog lookup phrase for the current product request, with hedges, politeness, uncertainty words, and non-product framing removed. "
+            "For example, from 'maybe a laptop' return catalog_search_term='laptop'; from 'probably gaming laptop' return 'gaming laptop'; from non-product messages return null or empty. "
             "quantity must be a numeric value or null, never a string with unit words or approximations. "
             "Use next_action to express the single best next sales step after this message. "
             "Use small_talk for greetings, social check-ins, or politeness in any language when there is no product, service, or order request yet. "
@@ -1771,7 +1774,7 @@ async def _classify_state_with_llm(
             "Prefer show_matching_options or select_specific_item when the customer named only a broad product and asks what exists. "
             "Do not ask again for quantity or UOM when they are already known in the lead profile unless the customer changes them. "
             "If there is an active order and the customer explicitly asks for a new or separate order, do not treat that as add_to_order. "
-            "Do not invent values. Use any customer language. If unsure, keep lead_patch empty, next_action empty, and lower confidence."
+            "Do not invent values. Use any customer language. If unsure, keep lead_patch empty, catalog_search_term empty, next_action empty, and lower confidence."
         ),
         "input": [
             {
@@ -2468,6 +2471,11 @@ async def _process_message_result_locked(
             lead_config=_lead_management_config(tenant),
             intent=llm_state_result.get("intent"),
         )
+    llm_catalog_search_term = (
+        str(llm_state_result.get("catalog_search_term") or "").strip()
+        if use_llm_state and isinstance(llm_state_result, dict)
+        else ""
+    )
 
     llm_layers_enabled = _signal_classifier_enabled(tenant) or _state_updater_enabled(tenant)
     if llm_layers_enabled:
@@ -2905,6 +2913,7 @@ async def _process_message_result_locked(
         tenant=tenant,
         session=session,
         intent=session.get("last_intent"),
+        preferred_search_term=llm_catalog_search_term or None,
     )
     prefetched_order_status_context = await _maybe_prefetch_order_status_context(
         lc=lc,

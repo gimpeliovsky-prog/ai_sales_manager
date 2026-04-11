@@ -10,9 +10,14 @@ _CATALOG_PREVIEW_LIMIT = 5
 _CATALOG_BACKOFF_LIMIT = 3
 
 
-def catalog_prefetch_search_term(lead_profile: dict[str, Any] | None) -> str | None:
+def catalog_prefetch_search_term(
+    lead_profile: dict[str, Any] | None,
+    *,
+    preferred_search_term: str | None = None,
+) -> str | None:
     profile = normalize_lead_profile(lead_profile)
     prioritized_candidates = [
+        normalize_catalog_lookup_query(preferred_search_term),
         profile.get("catalog_item_name"),
         normalize_catalog_lookup_query(profile.get("product_interest")),
         normalize_catalog_lookup_query(profile.get("need")),

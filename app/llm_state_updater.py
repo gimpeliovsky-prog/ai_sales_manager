@@ -151,6 +151,7 @@ def parse_llm_state_update(text: str) -> dict[str, Any]:
     signal_emotion = str(payload.get("signal_emotion") or "").strip()
     preserves_deal = payload.get("signal_preserves_deal")
     lead_patch = payload.get("lead_patch") if isinstance(payload.get("lead_patch"), dict) else {}
+    catalog_search_term = _clean_text(payload.get("catalog_search_term"))
 
     sanitized_patch: dict[str, Any] = {}
     for key in SAFE_PATCH_FIELDS:
@@ -187,6 +188,9 @@ def parse_llm_state_update(text: str) -> dict[str, Any]:
         signal_emotion = ""
     preserves_deal = bool(preserves_deal) if isinstance(preserves_deal, bool) else None
 
+    if catalog_search_term and looks_like_small_talk(catalog_search_term):
+        catalog_search_term = None
+
     return {
         "valid": bool(intent or behavior_class or sanitized_patch or next_action or signal_type),
         "intent": intent or None,
@@ -197,5 +201,6 @@ def parse_llm_state_update(text: str) -> dict[str, Any]:
         "signal_preserves_deal": preserves_deal,
         "confidence": max(0.0, min(1.0, confidence)),
         "lead_patch": sanitized_patch,
+        "catalog_search_term": catalog_search_term,
         "reason": _clean_text(payload.get("reason")),
     }

@@ -7,6 +7,7 @@ from app.runtime_catalog_context import (
     build_catalog_preview_context,
     catalog_lookup_backoff_terms,
     should_prefetch_catalog_preview,
+    catalog_prefetch_search_term,
 )
 
 
@@ -60,6 +61,16 @@ class RuntimeCatalogContextTests(unittest.TestCase):
                 intent="browse_catalog",
             )
         )
+
+    def test_catalog_prefetch_search_term_prefers_model_extracted_anchor(self) -> None:
+        search_term = catalog_prefetch_search_term(
+            {
+                "product_interest": "computer",
+                "need": "computer",
+            },
+            preferred_search_term="gaming laptop",
+        )
+        self.assertEqual(search_term, "gaming laptop")
 
 
 if __name__ == "__main__":
