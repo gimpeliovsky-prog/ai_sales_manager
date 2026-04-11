@@ -6,6 +6,7 @@ from typing import Any
 from app.lead_management import normalize_catalog_lookup_query, normalize_lead_profile
 
 _CATALOG_PREFETCH_OPTION_LIMIT = 3
+_CATALOG_PREVIEW_LIMIT = 5
 
 
 def catalog_prefetch_search_term(lead_profile: dict[str, Any] | None) -> str | None:
@@ -47,6 +48,18 @@ def should_prefetch_catalog_options(*, lead_profile: dict[str, Any] | None, inte
     return next_action == "select_specific_item" and str(intent or "") in {"browse_catalog", "order_detail", "add_to_order"}
 
 
+def should_prefetch_catalog_preview(*, lead_profile: dict[str, Any] | None, intent: str | None) -> bool:
+    profile = normalize_lead_profile(lead_profile)
+    if str(intent or "") != "browse_catalog":
+        return False
+    if catalog_prefetch_search_term(profile):
+        return False
+    if profile.get("catalog_item_code"):
+        return False
+    next_action = str(profile.get("next_action") or "")
+    return next_action in {"show_matching_options", "ask_need", "select_specific_item"}
+
+
 def build_catalog_prefetch_context(tool_result: dict[str, Any], *, search_term: str) -> str:
     result = tool_result if isinstance(tool_result, dict) else {}
     if result.get("error"):
@@ -62,6 +75,7 @@ def build_catalog_prefetch_context(tool_result: dict[str, Any], *, search_term: 
             f'Runtime catalog lookup already ran for "{search_term}" and found no exact matches. '
             "Do not claim that this product family exists in the catalog or is available. "
             "Ask for a narrower model, variant, or item type. "
+            "Do not suggest example models, variants, or subtypes unless they came from a catalog tool result in this conversation. "
             "Do not re-ask for quantity or UOM when they are already known."
         )
 
@@ -97,3 +111,35 @@ def build_catalog_prefetch_context(tool_result: dict[str, Any], *, search_term: 
     if result.get("price_display_blocked"):
         guidance.append("Do not mention price until product, quantity, and UOM are fully anchored.")
     return "\n".join(guidance)
+
+
+def build_catalog_preview_context(tool_result: dict[str, Any], *, limit: int = _CATALOG_PREVIEW_LIMIT) -> str:
+    result = tool_result if isinstance(tool_result, dict) else {}
+    items = result.get("items")
+    if not isinstance(items, list) or not items:
+        return (
+            "Runtime catalog preview returned no items. "
+            "Do not claim that the catalog is empty unless a fresh tool result says so. "
+            "Ask the customer which product family or item type they want."
+        )
+
+    option_lines: list[str] = []
+    for item in items[: max(1, int(limit or _CATALOG_PREVIEW_LIMIT))]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("display_item_name") or item.get("item_name") or item.get("item_code") or "").strip()
+        item_code = str(item.get("item_code") or "").strip()
+        if not name:
+            continue
+        option_lines.append(f"- {name} ({item_code})" if item_code and item_code != name else f"- {name}")
+    if not option_lines:
+        option_lines.append("- Catalog items are available")
+
+    return "\n".join(
+        [
+            "Runtime catalog preview already ran for a broad browse request with no specific product anchor.",
+            "Use these real catalog examples directly in your reply instead of saying no match:",
+            *option_lines,
+            "Present them as examples of what is available and ask which item type the customer wants.",
+        ]
+    )

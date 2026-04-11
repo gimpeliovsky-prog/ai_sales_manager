@@ -20,6 +20,7 @@ from app.buyer_intake import (
     get_known_buyer_greeting as _known_buyer_greeting_text,
     truncate_inbound_text,
 )
+from app.catalog_localization import catalog_lang as _catalog_lang
 from app.conversation_flow import (
     advance_stage_after_tool,
     behavior_from_signal_classifier,
@@ -74,7 +75,13 @@ from app.greeting_policy import (
     should_send_known_buyer_greeting,
 )
 from app.runtime_availability_context import build_availability_prefetch_context, selected_item_code, should_prefetch_item_availability
-from app.runtime_catalog_context import build_catalog_prefetch_context, catalog_prefetch_search_term, should_prefetch_catalog_options
+from app.runtime_catalog_context import (
+    build_catalog_prefetch_context,
+    build_catalog_preview_context,
+    catalog_prefetch_search_term,
+    should_prefetch_catalog_options,
+    should_prefetch_catalog_preview,
+)
 from app.sales_dedupe import detect_duplicate_lead
 from app.sales_lead_repository import get_sales_lead_repository
 from app.sales_quality import update_session_quality
@@ -1130,6 +1137,30 @@ async def _maybe_prefetch_catalog_context(
     intent: str | None,
 ) -> str | None:
     lead_profile = normalize_lead_profile(active_lead_profile(session))
+    if should_prefetch_catalog_preview(lead_profile=lead_profile, intent=intent):
+        try:
+            preview_result = await lc.get_items(
+                company_code,
+                None,
+                None,
+                _catalog_lang(current_lang),
+                limit=5,
+                compact=True,
+            )
+        except Exception:
+            preview_result = {"items": []}
+        summary = _tool_result_summary("get_product_catalog", preview_result if isinstance(preview_result, dict) else {})
+        summary["source"] = "runtime_prefetch"
+        summary["browse_preview"] = True
+        _log_event(
+            "catalog_prefetch_finished",
+            company_code=company_code,
+            channel=channel,
+            channel_uid=channel_uid,
+            stage=session.get("stage"),
+            summary=summary,
+        )
+        return build_catalog_preview_context(preview_result if isinstance(preview_result, dict) else {})
     if not should_prefetch_catalog_options(lead_profile=lead_profile, intent=intent):
         return None
     search_term = catalog_prefetch_search_term(lead_profile)

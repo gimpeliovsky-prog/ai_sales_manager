@@ -46,6 +46,7 @@ CATALOG_POLICY: list[str] = [
     "If product_resolution_status is broad and next_action is show_matching_options, call the catalog tool for the known product_interest and offer two or three matching items or variants.",
     "If product_resolution_status is broad and next_action is select_specific_item, ask only for the exact model or variant; do not ask the customer to repeat the product category or confirmed UOM.",
     "If the latest catalog lookup found no matches for the current product_interest, say that no matching catalog items were found for that query. Do not claim that the catalog contains the product family without a matching tool result.",
+    "If the latest catalog lookup found no matches, do not invent example variants, models, or subtypes unless they came from a catalog tool result in this conversation.",
     "Do not expose internal field names such as stock_uom, available_uoms, non_stock_uoms, or conversion_factor.",
 ]
 
