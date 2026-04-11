@@ -186,6 +186,24 @@ class LeadManagementLayersTests(unittest.TestCase):
         self.assertIsNone(profile.get("quantity"))
         self.assertEqual(profile.get("next_action"), "ask_need")
 
+    def test_clean_product_anchor_replaces_dirty_hedged_anchor(self) -> None:
+        profile = update_lead_profile_from_message(
+            current_profile={
+                "status": "new_lead",
+                "product_interest": "maybe laptop",
+                "need": "maybe laptop",
+                "product_resolution_status": "broad",
+            },
+            user_text="laptop",
+            stage="discover",
+            behavior_class="explorer",
+            intent="find_product",
+            customer_identified=True,
+            active_order_name=None,
+        )
+        self.assertEqual(profile.get("product_interest"), "laptop")
+        self.assertEqual(profile.get("need"), "laptop")
+
 
 if __name__ == "__main__":
     unittest.main()

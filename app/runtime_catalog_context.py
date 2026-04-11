@@ -13,7 +13,7 @@ def catalog_prefetch_search_term(lead_profile: dict[str, Any] | None) -> str | N
     profile = normalize_lead_profile(lead_profile)
     prioritized_candidates = [
         profile.get("catalog_item_name"),
-        profile.get("product_interest"),
+        normalize_catalog_lookup_query(profile.get("product_interest")),
         normalize_catalog_lookup_query(profile.get("need")),
     ]
     for candidate in prioritized_candidates:
@@ -52,10 +52,16 @@ def should_prefetch_catalog_preview(*, lead_profile: dict[str, Any] | None, inte
     profile = normalize_lead_profile(lead_profile)
     if str(intent or "") != "browse_catalog":
         return False
-    if catalog_prefetch_search_term(profile):
-        return False
     if profile.get("catalog_item_code"):
         return False
+    next_action = str(profile.get("next_action") or "")
+    last_status = str(profile.get("catalog_lookup_status") or "unknown")
+    if catalog_prefetch_search_term(profile):
+        return bool(
+            profile.get("product_resolution_status") == "broad"
+            and last_status == "no_match"
+            and next_action in {"show_matching_options", "select_specific_item"}
+        )
     next_action = str(profile.get("next_action") or "")
     return next_action in {"show_matching_options", "ask_need", "select_specific_item"}
 

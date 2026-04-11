@@ -3,7 +3,11 @@
     "show me",
     "what do you have",
     "which do you have",
-    "what options do you have"
+    "what options do you have",
+    "what kind do you have",
+    "which kind do you have",
+    "what kinds do you have",
+    "which kinds do you have"
   ],
   "yes_terms": [
     "yes",
@@ -158,6 +162,9 @@
   "product_interest_filler_terms": [
     "ok",
     "okay",
+    "maybe",
+    "perhaps",
+    "probably",
     "hi",
     "hello",
     "hey",

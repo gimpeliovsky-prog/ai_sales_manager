@@ -677,6 +677,8 @@ def _synchronize_need_anchor(profile: dict[str, Any], config: dict[str, Any] | N
     )
     if not aligned:
         profile["need"] = anchor_display
+    elif current_need != anchor_display and normalized_need.casefold() == normalized_anchor.casefold():
+        profile["need"] = anchor_display
     elif profile.get("catalog_item_name") and _same_interest(normalized_need, _clean_text(profile.get("product_interest"))):
         profile["need"] = anchor_display
     return profile
@@ -699,10 +701,13 @@ def _should_replace_product_interest(
     candidate = _normalize_single_item_interest(normalized_text, config)
     if not candidate:
         return False
+    normalized_current_interest = _normalize_single_item_interest(current_interest, config) if current_interest else None
     if not _substantive_product_tokens(candidate):
         return False
     if not current_interest:
         return True
+    if normalized_current_interest and candidate.casefold() == normalized_current_interest.casefold():
+        return candidate.casefold() != str(current_interest or "").strip().casefold()
     if _same_interest(candidate, current_interest):
         return _refines_interest(candidate, current_interest)
     if resolved_intent == "browse_catalog" and not _refines_interest(candidate, current_interest):
