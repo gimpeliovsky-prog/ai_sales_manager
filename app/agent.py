@@ -374,7 +374,11 @@ async def _apply_lead_dedupe(
     profile = normalize_lead_profile(active_lead_profile(session))
     if profile.get("duplicate_of_lead_id") or profile.get("merged_into_lead_id"):
         return
+    if profile.get("dedupe_checked_at") and not session.get("conversation_reopened"):
+        return
     if profile.get("status") in {"none", "won", "lost"}:
+        return
+    if str(session.get("stage") or "").strip() not in {"new", "identify", "lead_capture", "discover"}:
         return
     try:
         window_days = int(config.get("dedupe_window_days", 7) or 7)

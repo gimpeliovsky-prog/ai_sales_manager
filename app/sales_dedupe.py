@@ -4,6 +4,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.lead_management import normalize_catalog_lookup_query
 
 _TOKEN_RE = re.compile(r"[\w]+", re.UNICODE)
 
@@ -58,8 +59,12 @@ def _similarity(left: Any, right: Any) -> float:
 
 
 def _product_similarity(current: dict[str, Any], candidate: dict[str, Any]) -> float:
-    current_product = _text(current.get("product_interest") or current.get("need"))
-    candidate_product = _text(candidate.get("product_interest") or candidate.get("need"))
+    current_product = normalize_catalog_lookup_query(current.get("product_interest") or current.get("need")) or _text(
+        current.get("product_interest") or current.get("need")
+    )
+    candidate_product = normalize_catalog_lookup_query(candidate.get("product_interest") or candidate.get("need")) or _text(
+        candidate.get("product_interest") or candidate.get("need")
+    )
     return _similarity(current_product, candidate_product)
 
 
@@ -88,7 +93,7 @@ def detect_duplicate_lead(
     candidates: list[dict[str, Any]],
     now: datetime | None = None,
     window_days: int = 7,
-    product_similarity_threshold: float = 0.55,
+    product_similarity_threshold: float = 0.8,
 ) -> dict[str, Any] | None:
     resolved_now = now or datetime.now(UTC)
     if resolved_now.tzinfo is None:
@@ -98,9 +103,6 @@ def detect_duplicate_lead(
     current_order = _text(current.get("active_order_name"))
     current_phone = _phone_digits(current.get("buyer_phone"))
     current_customer = _text(current.get("erp_customer_id")).casefold()
-    current_channel = _text(current.get("channel")).casefold()
-    current_uid = _text(current.get("channel_uid")).casefold()
-
     best: dict[str, Any] | None = None
     best_score = 0.0
     for candidate in candidates:
@@ -127,31 +129,21 @@ def detect_duplicate_lead(
 
         candidate_phone = _phone_digits(candidate.get("buyer_phone"))
         candidate_customer = _text(candidate.get("erp_customer_id")).casefold()
-        candidate_channel = _text(candidate.get("channel")).casefold()
-        candidate_uid = _text(candidate.get("channel_uid")).casefold()
         same_phone = bool(current_phone and candidate_phone and current_phone == candidate_phone)
         same_customer = bool(current_customer and candidate_customer and current_customer == candidate_customer)
-        same_channel_uid = bool(
-            current_channel and current_uid and candidate_channel and candidate_uid
-            and current_channel == candidate_channel
-            and current_uid == candidate_uid
-        )
-        if not (same_phone or same_customer or same_channel_uid):
+        if not (same_phone or same_customer):
             continue
 
         similarity = _product_similarity(current, candidate)
-        if candidate_order and same_customer and similarity >= product_similarity_threshold:
+        if candidate_order and same_customer and similarity >= max(product_similarity_threshold, 0.85):
             reason = "same_customer_existing_active_order_similar_product"
             score = max(0.85, similarity)
         elif same_customer and similarity >= product_similarity_threshold:
             reason = "same_customer_similar_product"
             score = max(0.75, similarity)
-        elif same_phone and similarity >= product_similarity_threshold:
+        elif same_phone and similarity >= max(product_similarity_threshold, 0.9):
             reason = "same_phone_similar_product"
             score = max(0.7, similarity)
-        elif same_channel_uid and similarity >= product_similarity_threshold:
-            reason = "same_channel_similar_product"
-            score = max(0.65, similarity)
         else:
             continue
 
