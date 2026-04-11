@@ -800,6 +800,9 @@ def _set_pending_buyer_contact(session: dict[str, Any], *, full_name: str, phone
 def _apply_buyer_context(session: dict[str, Any], buyer_result: dict[str, Any]) -> None:
     if not isinstance(buyer_result, dict):
         return
+    previous_identity_id = str(session.get("buyer_identity_id") or "").strip()
+    previous_customer_id = str(session.get("erp_customer_id") or "").strip()
+    previous_returning_announced = bool(session.get("returning_customer_announced"))
     _clear_pending_buyer_state(session)
     if buyer_result.get("erp_customer_id"):
         session["erp_customer_id"] = buyer_result.get("erp_customer_id")
@@ -826,7 +829,13 @@ def _apply_buyer_context(session: dict[str, Any], buyer_result: dict[str, Any]) 
     session["buyer_review_required"] = bool(buyer_result.get("needs_review"))
     session["recent_sales_orders"] = buyer_result.get("recent_sales_orders") or []
     session["recent_sales_invoices"] = buyer_result.get("recent_sales_invoices") or []
-    session["returning_customer_announced"] = False
+    current_identity_id = str(session.get("buyer_identity_id") or "").strip()
+    current_customer_id = str(session.get("erp_customer_id") or "").strip()
+    same_buyer = bool(
+        (previous_identity_id and previous_identity_id == current_identity_id)
+        or (previous_customer_id and previous_customer_id == current_customer_id)
+    )
+    session["returning_customer_announced"] = previous_returning_announced if same_buyer else False
 
 
 async def _maybe_update_buyer_preferred_language(
