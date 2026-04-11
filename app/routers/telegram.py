@@ -213,13 +213,8 @@ def _cancel_confirmation_text(lang: str) -> str:
 
 
 def _temporary_error_text(lang: str) -> str:
-    texts = {
-        "ru": "Сейчас не получилось обработать подтверждение из-за временной ошибки. Попробуйте ещё раз.",
-        "en": "I couldn't process the confirmation right now because of a temporary error. Please try again.",
-        "he": "לא הצלחתי לעבד את האישור כרגע בגלל שגיאה זמנית. נסה שוב.",
-        "ar": "تعذر عليّ معالجة التأكيد الآن بسبب خطأ مؤقت. حاول مرة أخرى.",
-    }
-    return texts.get(lang, texts["en"])
+    return i18n_text("runtime.temporary_error", lang)
+
 
 
 def _matches_debug_catalog_command(text: str) -> bool:

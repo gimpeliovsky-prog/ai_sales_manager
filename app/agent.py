@@ -909,8 +909,6 @@ async def _finalize_intake_reply(
     handoff_reason: str | None = None,
     handoff_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if final_reply == "РџСЂРѕРёР·РѕС€Р»Р° РІРЅСѓС‚СЂРµРЅРЅСЏСЏ РѕС€РёР±РєР°, РїРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ.":
-        final_reply = _runtime_temporary_error_text(current_lang)
     session["messages"].append({"role": "user", "content": user_text})
     session["messages"].append({"role": "assistant", "content": reply})
     session["messages"] = session.get("messages", [])[-40:]
