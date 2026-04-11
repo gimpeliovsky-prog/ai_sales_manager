@@ -78,6 +78,7 @@ from app.runtime_availability_context import build_availability_prefetch_context
 from app.runtime_catalog_context import (
     build_catalog_prefetch_context,
     build_catalog_preview_context,
+    catalog_lookup_backoff_terms,
     catalog_prefetch_search_term,
     should_prefetch_catalog_options,
     should_prefetch_catalog_preview,
@@ -1169,29 +1170,49 @@ async def _maybe_prefetch_catalog_context(
     if not search_term:
         return None
 
-    inputs = {"item_name": search_term}
-    try:
-        result_str = await execute_tool(
-            name="get_product_catalog",
-            inputs=inputs,
-            company_code=company_code,
-            erp_customer_id=session.get("erp_customer_id"),
-            active_sales_order_name=session.get("last_sales_order_name"),
-            current_lang=current_lang,
-            user_text=user_text,
-            channel=channel,
-            channel_uid=channel_uid,
-            lc=lc,
-            ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
-            lead_profile=lead_profile,
-        )
-    except Exception as exc:
-        logger.warning("Catalog prefetch failed for %s/%s: %s", channel, channel_uid, exc)
-        return None
-    try:
-        parsed_result = json.loads(result_str)
-    except json.JSONDecodeError:
-        parsed_result = {"raw_result": result_str, "error": "invalid_prefetch_result"}
+    original_search_term = search_term
+    applied_search_term = original_search_term
+    parsed_result: dict[str, Any] = {}
+    result_str = ""
+    backoff_candidates = catalog_lookup_backoff_terms(original_search_term)
+    if not backoff_candidates:
+        backoff_candidates = [original_search_term]
+    for index, candidate_search_term in enumerate(backoff_candidates):
+        inputs = {"item_name": candidate_search_term}
+        try:
+            result_str = await execute_tool(
+                name="get_product_catalog",
+                inputs=inputs,
+                company_code=company_code,
+                erp_customer_id=session.get("erp_customer_id"),
+                active_sales_order_name=session.get("last_sales_order_name"),
+                current_lang=current_lang,
+                user_text=user_text,
+                channel=channel,
+                channel_uid=channel_uid,
+                lc=lc,
+                ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
+                lead_profile=lead_profile,
+            )
+        except Exception as exc:
+            logger.warning("Catalog prefetch failed for %s/%s: %s", channel, channel_uid, exc)
+            return None
+        try:
+            parsed_result = json.loads(result_str)
+        except json.JSONDecodeError:
+            parsed_result = {"raw_result": result_str, "error": "invalid_prefetch_result"}
+        items = parsed_result.get("items") if isinstance(parsed_result, dict) else None
+        if isinstance(items, list) and items:
+            applied_search_term = candidate_search_term
+            break
+        if parsed_result.get("error"):
+            applied_search_term = candidate_search_term
+            break
+        if index == len(backoff_candidates) - 1:
+            applied_search_term = original_search_term
+            inputs = {"item_name": original_search_term}
+        else:
+            continue
 
     previous_tool_lead_profile = normalize_lead_profile(active_lead_profile(session))
     set_active_lead_profile(session, update_lead_profile_from_tool(
@@ -1216,7 +1237,9 @@ async def _maybe_prefetch_catalog_context(
 
     summary = _tool_result_summary("get_product_catalog", parsed_result if isinstance(parsed_result, dict) else {})
     summary["source"] = "runtime_prefetch"
-    summary["search_term"] = search_term
+    summary["search_term"] = applied_search_term
+    summary["original_search_term"] = original_search_term
+    summary["search_term_backoff_applied"] = applied_search_term != original_search_term
     _log_event(
         "catalog_prefetch_finished",
         company_code=company_code,
@@ -1255,7 +1278,7 @@ async def _maybe_prefetch_catalog_context(
         content=result_str,
         payload=summary,
     )
-    return build_catalog_prefetch_context(parsed_result if isinstance(parsed_result, dict) else {}, search_term=search_term)
+    return build_catalog_prefetch_context(parsed_result if isinstance(parsed_result, dict) else {}, search_term=applied_search_term)
 
 
 async def _maybe_prefetch_availability_context(

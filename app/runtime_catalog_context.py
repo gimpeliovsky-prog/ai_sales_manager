@@ -7,6 +7,7 @@ from app.lead_management import normalize_catalog_lookup_query, normalize_lead_p
 
 _CATALOG_PREFETCH_OPTION_LIMIT = 3
 _CATALOG_PREVIEW_LIMIT = 5
+_CATALOG_BACKOFF_LIMIT = 3
 
 
 def catalog_prefetch_search_term(lead_profile: dict[str, Any] | None) -> str | None:
@@ -21,6 +22,33 @@ def catalog_prefetch_search_term(lead_profile: dict[str, Any] | None) -> str | N
         if text:
             return text[:160]
     return None
+
+
+def catalog_lookup_backoff_terms(search_term: str | None, *, limit: int = _CATALOG_BACKOFF_LIMIT) -> list[str]:
+    normalized = re.sub(r"\s+", " ", str(search_term or "")).strip()
+    if not normalized:
+        return []
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str) -> None:
+        candidate = re.sub(r"\s+", " ", str(value or "")).strip()[:160]
+        if len(candidate) < 3:
+            return
+        key = candidate.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(candidate)
+
+    _add(normalized)
+    tokens = normalized.split()
+    if len(tokens) >= 2:
+        for index in range(1, len(tokens)):
+            _add(" ".join(tokens[index:]))
+            if len(candidates) >= max(1, int(limit or _CATALOG_BACKOFF_LIMIT)):
+                break
+    return candidates[: max(1, int(limit or _CATALOG_BACKOFF_LIMIT))]
 
 
 def should_prefetch_catalog_options(*, lead_profile: dict[str, Any] | None, intent: str | None) -> bool:

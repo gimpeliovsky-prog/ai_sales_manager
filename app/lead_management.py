@@ -577,6 +577,25 @@ def _substantive_product_tokens(text: str | None) -> list[str]:
     return [token for token in tokens if token not in _GENERIC_PRODUCT_TOKENS and len(token) > 1]
 
 
+def _interest_backoff_terms(text: str | None, config: dict[str, Any] | None) -> list[str]:
+    normalized = _clean_text(_normalize_single_item_interest(text, config) or text)
+    if not normalized:
+        return []
+    candidates: list[str] = []
+    seen: set[str] = set()
+    tokens = normalized.split()
+    for index in range(len(tokens)):
+        candidate = " ".join(tokens[index:]).strip()
+        if len(candidate) < 3:
+            continue
+        key = candidate.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+    return candidates
+
+
 def _has_positive_product_evidence(
     *,
     user_text: str,
@@ -670,6 +689,7 @@ def _synchronize_need_anchor(profile: dict[str, Any], config: dict[str, Any] | N
 
     normalized_anchor = normalize_catalog_lookup_query(anchor_display, config) or anchor_display
     normalized_need = normalize_catalog_lookup_query(current_need, config) or current_need
+    normalized_need_backoff_terms = {item.casefold() for item in _interest_backoff_terms(current_need, config)}
     aligned = (
         _same_interest(normalized_need, normalized_anchor)
         or _refines_interest(normalized_need, normalized_anchor)
@@ -678,6 +698,8 @@ def _synchronize_need_anchor(profile: dict[str, Any], config: dict[str, Any] | N
     if not aligned:
         profile["need"] = anchor_display
     elif current_need != anchor_display and normalized_need.casefold() == normalized_anchor.casefold():
+        profile["need"] = anchor_display
+    elif current_need != anchor_display and normalized_anchor.casefold() in normalized_need_backoff_terms:
         profile["need"] = anchor_display
     elif profile.get("catalog_item_name") and _same_interest(normalized_need, _clean_text(profile.get("product_interest"))):
         profile["need"] = anchor_display
@@ -708,6 +730,9 @@ def _should_replace_product_interest(
         return True
     if normalized_current_interest and candidate.casefold() == normalized_current_interest.casefold():
         return candidate.casefold() != str(current_interest or "").strip().casefold()
+    current_backoff_terms = {item.casefold() for item in _interest_backoff_terms(current_interest, config)}
+    if candidate.casefold() in current_backoff_terms and candidate.casefold() != str(current_interest or "").strip().casefold():
+        return True
     if _same_interest(candidate, current_interest):
         return _refines_interest(candidate, current_interest)
     if resolved_intent == "browse_catalog" and not _refines_interest(candidate, current_interest):

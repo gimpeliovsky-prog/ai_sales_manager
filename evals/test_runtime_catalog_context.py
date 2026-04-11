@@ -5,7 +5,7 @@ import unittest
 from app.runtime_catalog_context import (
     build_catalog_prefetch_context,
     build_catalog_preview_context,
-    catalog_prefetch_search_term,
+    catalog_lookup_backoff_terms,
     should_prefetch_catalog_preview,
 )
 
@@ -42,14 +42,11 @@ class RuntimeCatalogContextTests(unittest.TestCase):
             )
         )
 
-    def test_catalog_prefetch_search_term_normalizes_dirty_product_anchor(self) -> None:
-        search_term = catalog_prefetch_search_term(
-            {
-                "product_interest": "maybe laptop",
-                "need": "maybe laptop",
-            }
-        )
-        self.assertEqual(search_term, "laptop")
+    def test_catalog_lookup_backoff_terms_try_shorter_suffixes(self) -> None:
+        candidates = catalog_lookup_backoff_terms("probably gaming laptop")
+        self.assertEqual(candidates[0], "probably gaming laptop")
+        self.assertIn("gaming laptop", candidates)
+        self.assertIn("laptop", candidates)
 
     def test_prefetch_catalog_preview_after_broad_no_match_followup(self) -> None:
         self.assertTrue(
