@@ -4,7 +4,9 @@ import unittest
 from unittest.mock import patch
 
 from app.buyer_intake import truncate_inbound_text
+from app.conversation_contexts import ensure_session_contexts, reconcile_contexts_after_state_update
 from app.i18n import text as i18n_text
+from app.tool_policy import evaluate_tool_call
 
 try:
     import app.agent as agent_module
@@ -25,6 +27,86 @@ class RuntimeHardeningTests(unittest.TestCase):
     def test_runtime_temporary_error_translation_exists(self) -> None:
         message = i18n_text("runtime.temporary_error", "en")
         self.assertIn("temporary error", message.lower())
+
+    def test_blocked_create_order_returns_readiness_customer_reply(self) -> None:
+        session = {
+            "stage": "order_build",
+            "erp_customer_id": "CUST-1",
+            "lead_profile": {
+                "catalog_item_code": "SKU002",
+                "catalog_item_name": "Laptop",
+                "product_interest": "laptop",
+                "quantity": 10,
+                "uom": "unit",
+                "next_action": "ask_delivery_timing",
+                "missing_slots": ["delivery_need", "confirmation"],
+            },
+        }
+        ensure_session_contexts(session)
+        reconcile_contexts_after_state_update(session, previous_lead_profile={}, active_order_name=None)
+        reply = evaluate_tool_call(
+            tool_name="create_sales_order",
+            inputs={"items": [{"item_code": "SKU002", "qty": 10, "uom": "unit"}]},
+            session=session,
+            tenant={},
+            user_text="ok",
+        )
+        self.assertIsNotNone(reply)
+        self.assertTrue(reply["blocked_by_policy"])
+        self.assertIn("delivery date", str(reply.get("customer_reply") or "").lower())
+
+    def test_blocked_send_pdf_uses_customer_reply_from_order_readiness(self) -> None:
+        session = {
+            "stage": "confirm",
+            "erp_customer_id": "CUST-1",
+            "lead_profile": {
+                "catalog_item_code": "SKU002",
+                "catalog_item_name": "Laptop",
+                "product_interest": "laptop",
+                "quantity": 10,
+                "uom": "unit",
+                "next_action": "ask_delivery_timing",
+                "missing_slots": ["delivery_need", "confirmation"],
+            },
+        }
+        ensure_session_contexts(session)
+        reconcile_contexts_after_state_update(session, previous_lead_profile={}, active_order_name=None)
+        reply = evaluate_tool_call(
+            tool_name="send_sales_order_pdf",
+            inputs={"sales_order_name": ""},
+            session=session,
+            tenant={},
+            user_text="send me an order",
+        )
+        self.assertIsNotNone(reply)
+        self.assertTrue(reply["blocked_by_policy"])
+        customer_reply = str(reply.get("customer_reply") or "").lower()
+        self.assertIn("pdf", customer_reply)
+        self.assertIn("delivery date", customer_reply)
+
+    @unittest.skipIf(agent_module is None, "app.agent dependencies are unavailable in this interpreter")
+    def test_confirmation_fallback_does_not_synthesize_create_when_delivery_missing(self) -> None:
+        session = {
+            "stage": "order_build",
+            "erp_customer_id": "CUST-1",
+            "lead_profile": {
+                "catalog_item_code": "SKU002",
+                "catalog_item_name": "Laptop",
+                "product_interest": "laptop",
+                "quantity": 10,
+                "uom": "unit",
+                "next_action": "ask_delivery_timing",
+                "missing_slots": ["delivery_need", "confirmation"],
+            },
+        }
+        ensure_session_contexts(session)
+        reconcile_contexts_after_state_update(session, previous_lead_profile={}, active_order_name=None)
+        reply = agent_module._build_confirmation_fallback_call(
+            session=session,
+            tenant={},
+            user_text="ok",
+        )
+        self.assertIsNone(reply)
 
 
 @unittest.skipIf(agent_module is None, "app.agent dependencies are unavailable in this interpreter")

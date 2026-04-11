@@ -10,6 +10,7 @@ from app.conversation_flow import (
     STAGE_PROMPTS,
 )
 from app.sales_policy import sales_policy
+from app.tool_policy import prompt_order_execution_readiness
 
 CORE_POLICY: list[str] = [
     "Act like a capable human sales manager, not like a generic chatbot.",
@@ -275,7 +276,30 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None, *, stage: str | Non
     return lines
 
 
-def _lead_state_guard_lines(lead_profile: dict[str, Any] | None) -> list[str]:
+def _active_context_type_from_prompt_context(
+    contexts: dict[str, Any] | None,
+    active_context_id: str | None,
+) -> str | None:
+    if not isinstance(contexts, dict):
+        return None
+    active_id = str(active_context_id or "").strip()
+    active = contexts.get(active_id) if active_id else None
+    if not isinstance(active, dict):
+        return None
+    value = str(active.get("context_type") or "").strip()
+    return value or None
+
+
+def _lead_state_guard_lines(
+    lead_profile: dict[str, Any] | None,
+    *,
+    tenant: dict[str, Any],
+    stage: str | None,
+    erp_customer_id: str | None,
+    last_sales_order_name: str | None,
+    contexts: dict[str, Any] | None,
+    active_context_id: str | None,
+) -> list[str]:
     if not isinstance(lead_profile, dict):
         return []
     lines: list[str] = []
@@ -311,6 +335,23 @@ def _lead_state_guard_lines(lead_profile: dict[str, Any] | None) -> list[str]:
         lines.append("The next step is to show matching catalog options, not to ask again for already known product, quantity, or unit details.")
     elif next_action == "select_specific_item":
         lines.append("The next step is to resolve the exact model or variant only; do not re-ask already known product category, quantity, or unit.")
+    readiness = prompt_order_execution_readiness(
+        tool_name="create_sales_order",
+        tenant=tenant,
+        stage=stage,
+        lead_profile=lead_profile,
+        has_customer=bool(erp_customer_id),
+        context_type=_active_context_type_from_prompt_context(contexts, active_context_id),
+        active_order_name=last_sales_order_name,
+    )
+    missing_slots = readiness.get("blocking_missing_slots") if isinstance(readiness.get("blocking_missing_slots"), list) else []
+    if missing_slots:
+        lines.append(f"Required details are still missing before order creation: {', '.join(str(item) for item in missing_slots if str(item).strip())}.")
+        lines.append("Do not say the order can be created now while those details are still missing.")
+    elif readiness.get("order_step") == "awaiting_confirmation":
+        lines.append("All required order details are already known. Do not ask for new order details; ask for explicit confirmation or execute only after clear customer confirmation.")
+    elif readiness.get("order_step") == "already_created":
+        lines.append("This conversation context already has a created order. Do not propose creating another order unless the customer explicitly asks for a separate new order.")
     if lead_profile.get("catalog_lookup_status") == "no_match" and lead_profile.get("catalog_lookup_query"):
         lines.append(
             f"No matching catalog items were found for {lead_profile.get('catalog_lookup_query')}. Do not claim this product is in the catalog without a new matching tool result."
@@ -543,7 +584,15 @@ def build_runtime_system_prompt(
     if example_lines:
         lines.append("")
         lines.extend(_section("Examples", example_lines))
-    lead_state_guards = _lead_state_guard_lines(lead_profile)
+    lead_state_guards = _lead_state_guard_lines(
+        lead_profile,
+        tenant=tenant,
+        stage=resolved_stage,
+        erp_customer_id=erp_customer_id,
+        last_sales_order_name=last_sales_order_name,
+        contexts=contexts,
+        active_context_id=active_context_id,
+    )
     if lead_state_guards:
         lines.append("")
         lines.extend(_section("State guards", lead_state_guards))

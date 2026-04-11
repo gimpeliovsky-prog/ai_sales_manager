@@ -104,6 +104,45 @@ class ToolPolicyContextTests(unittest.TestCase):
         self.assertTrue(result["blocked_by_policy"])
         self.assertIn("already been created", result["error"])
 
+    def test_create_sales_order_blocked_missing_delivery_uses_readiness_reply(self) -> None:
+        session = {
+            "erp_customer_id": "CUST-1",
+            "stage": "order_build",
+            "behavior_class": "direct_buyer",
+            "last_intent": "confirm_order",
+            "signal_type": "confirmation",
+            "signal_confidence": 0.9,
+            "signal_preserves_deal": True,
+            "signal_emotion": "neutral",
+            "lead_profile": {
+                "status": "order_ready",
+                "next_action": "ask_delivery_timing",
+                "missing_slots": ["delivery_need", "confirmation"],
+                "catalog_item_code": "SKU002",
+                "catalog_item_name": "Laptop",
+                "quantity": 10,
+                "uom": "piece",
+                "product_interest": "laptop",
+            },
+        }
+        ensure_session_contexts(session)
+        reconcile_contexts_after_state_update(
+            session,
+            previous_lead_profile={"status": "qualified"},
+            active_order_name=None,
+        )
+        result = evaluate_tool_call(
+            tool_name="create_sales_order",
+            inputs={"items": [{"item_code": "SKU002", "qty": 10, "uom": "piece"}]},
+            session=session,
+            tenant={},
+            user_text="ok",
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result["blocked_by_policy"])
+        self.assertEqual(result.get("reason_code"), "missing_details")
+        self.assertIn("delivery date", str(result.get("customer_reply") or "").lower())
+
 
 if __name__ == "__main__":
     unittest.main()

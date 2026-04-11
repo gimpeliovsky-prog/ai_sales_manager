@@ -89,7 +89,7 @@ from app.sales_quality import update_session_quality
 from app.sales_reporting import lead_snapshot
 from app.sales_timeline import append_lead_timeline_event
 from app.session_store import load_session, new_session, save_session, save_session_snapshot, session_processing_lock
-from app.tool_policy import evaluate_tool_call
+from app.tool_policy import evaluate_order_execution_readiness, evaluate_tool_call
 from app.tools import TOOLS, execute_tool
 
 logger = logging.getLogger(__name__)
@@ -1554,14 +1554,13 @@ def _format_customer_reply(text: str) -> str:
     return result or "..."
 
 
-def _build_confirmation_fallback_call(*, session: dict[str, Any], user_text: str) -> dict[str, Any] | None:
+def _build_confirmation_fallback_call(*, session: dict[str, Any], tenant: dict[str, Any], user_text: str) -> dict[str, Any] | None:
     if not has_explicit_confirmation(user_text):
         return None
     lead_profile = normalize_lead_profile(active_lead_profile(session))
     separate_order_requested = bool(lead_profile.get("separate_order_requested"))
-    next_action = str(lead_profile.get("next_action") or "").strip()
     stage = str(session.get("stage") or "").strip()
-    if next_action != "confirm_order" and stage not in {"order_build", "confirm"} and not separate_order_requested:
+    if stage not in {"order_build", "confirm"} and not separate_order_requested:
         return None
     if lead_profile.get("requested_items_need_uom_confirmation"):
         return None
@@ -1586,6 +1585,16 @@ def _build_confirmation_fallback_call(*, session: dict[str, Any], user_text: str
     if active_order_name and not separate_order_requested and (last_intent == "add_to_order" or correction_requested or stage in {"invoice", "service", "closed"}):
         return None
     inputs = {"items": items}
+    readiness = evaluate_order_execution_readiness(
+        tool_name="create_sales_order",
+        session=session,
+        tenant=tenant,
+        inputs=inputs,
+        user_text=user_text,
+        confirmation_override=None,
+    )
+    if not readiness.get("ready_to_execute"):
+        return None
     tool_name = "create_sales_order"
     return {
         "type": "function_call",
@@ -1620,6 +1629,40 @@ def _tool_success_fallback_reply(tool_name: str, tool_result: dict[str, Any], la
             "ar": f"أنشأت الفاتورة {order_name}.",
         }
         return templates.get(lang, f"I created invoice {order_name}.")
+    return None
+
+
+def _next_action_fallback_reply(session: dict[str, Any], lang: str) -> str | None:
+    lead_profile = normalize_lead_profile(active_lead_profile(session))
+    product_interest = str(
+        lead_profile.get("catalog_item_name")
+        or lead_profile.get("product_interest")
+        or "this item"
+    ).strip()
+    quantity = lead_profile.get("quantity")
+    uom = str(lead_profile.get("uom") or "").strip()
+    next_action = str(lead_profile.get("next_action") or "").strip()
+
+    if next_action == "ask_delivery_timing":
+        return "I still need one detail before I can create the order: what delivery date or timing should I use?"
+    if next_action == "ask_unit":
+        if quantity not in (None, "", []):
+            return f"I still need one detail before I can create it: what unit or package should I use for {quantity} {product_interest}?"
+        return "I still need one detail before I can create it: what unit or package should I use?"
+    if next_action == "ask_quantity":
+        if product_interest and product_interest != "this item":
+            return f"I still need one detail before I can create it: how many {product_interest} do you need?"
+        return "I still need one detail before I can create it: what quantity do you need?"
+    if next_action == "confirm_order":
+        summary_parts: list[str] = []
+        if quantity not in (None, "", []):
+            summary_parts.append(str(quantity).rstrip("0").rstrip(".") if isinstance(quantity, float) else str(quantity))
+        if product_interest and product_interest != "this item":
+            summary_parts.append(product_interest)
+        if uom:
+            summary_parts.append(f"as {uom}")
+        summary = " ".join(part for part in summary_parts if part).strip() or "the order details"
+        return f"Please confirm the order contents one last time: {summary}."
     return None
 
 
@@ -2954,6 +2997,7 @@ async def _process_message_result_locked(
     last_successful_tool_result: dict[str, Any] | None = None
     terminal_tool_completed = False
     tool_loop_failed = False
+    policy_reply_completed = False
 
     async with httpx.AsyncClient(timeout=max(5.0, float(settings.openai_runtime_timeout_seconds or 45))) as client:
         for _ in range(max_iter):
@@ -3000,7 +3044,7 @@ async def _process_message_result_locked(
                 final_reply = reply_text
 
             if not function_calls:
-                fallback_call = _build_confirmation_fallback_call(session=session, user_text=user_text)
+                fallback_call = _build_confirmation_fallback_call(session=session, tenant=tenant, user_text=user_text)
                 if not fallback_call:
                     break
                 synthesized_confirmation_tool = True
@@ -3278,6 +3322,12 @@ async def _process_message_result_locked(
                     payload=summary,
                 )
 
+                if parsed_result.get("blocked_by_policy"):
+                    customer_reply = str(parsed_result.get("customer_reply") or "").strip()
+                    final_reply = customer_reply or str(parsed_result.get("error") or "").strip() or _next_action_fallback_reply(session, current_lang) or _runtime_temporary_error_text(current_lang)
+                    policy_reply_completed = True
+                    break
+
                 if _is_terminal_write_tool_success(tool_name, parsed_result):
                     mark_active_context_status(
                         session,
@@ -3302,7 +3352,7 @@ async def _process_message_result_locked(
                     final_reply = _runtime_temporary_error_text(current_lang)
                     break
 
-            if terminal_tool_completed or tool_loop_failed:
+            if terminal_tool_completed or tool_loop_failed or policy_reply_completed:
                 break
             input_items = _trim_input_items(input_items + response.get("output", []) + tool_outputs)
         else:
@@ -3317,6 +3367,12 @@ async def _process_message_result_locked(
         fallback_reply = _tool_success_fallback_reply(last_successful_tool_name, last_successful_tool_result, current_lang)
         if fallback_reply:
             final_reply = fallback_reply
+    if not str(final_reply or "").strip() or str(final_reply).strip() == "...":
+        fallback_reply = _next_action_fallback_reply(session, current_lang)
+        if fallback_reply:
+            final_reply = fallback_reply
+    if not str(final_reply or "").strip() or str(final_reply).strip() == "...":
+        final_reply = _runtime_temporary_error_text(current_lang)
     final_reply = _format_customer_reply(final_reply)
     final_reply = _maybe_prefix_returning_customer(session, current_lang, final_reply)
     session["messages"].append({"role": "assistant", "content": final_reply})
