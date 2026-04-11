@@ -536,8 +536,12 @@ async def telegram_webhook(
     if text in ("/reset", "/новый"):
         await clear_session("telegram", chat_id)
         session = new_session(company_code=tenant.get("company_code"))
-        known_buyer = await lc.find_buyer_by_telegram(tenant["company_code"], chat_id)
-        if known_buyer.get("found"):
+        try:
+            known_buyer = await lc.find_buyer_by_telegram(tenant["company_code"], chat_id)
+        except Exception:
+            logger.exception("Telegram known buyer lookup failed during reset")
+            known_buyer = None
+        if isinstance(known_buyer, dict) and known_buyer.get("found"):
             session = _seed_known_buyer_session(session, known_buyer, lang=greeting_lang)
             result = {
                 "text": get_known_buyer_greeting(
@@ -546,6 +550,8 @@ async def telegram_webhook(
                 ),
                 "documents": [],
             }
+        elif known_buyer is None:
+            result = {"text": _temporary_error_text(greeting_lang), "documents": []}
         else:
             result = {"text": get_intro_message(greeting_lang), "documents": []}
     elif _matches_debug_catalog_command(text):
@@ -566,8 +572,12 @@ async def telegram_webhook(
             "documents": [],
         }
     elif text == "/start":
-        known_buyer = await lc.find_buyer_by_telegram(tenant["company_code"], chat_id)
-        if known_buyer.get("found"):
+        try:
+            known_buyer = await lc.find_buyer_by_telegram(tenant["company_code"], chat_id)
+        except Exception:
+            logger.exception("Telegram known buyer lookup failed during /start")
+            known_buyer = None
+        if isinstance(known_buyer, dict) and known_buyer.get("found"):
             session = _seed_known_buyer_session(session, known_buyer, lang=greeting_lang)
             result = {
                 "text": get_known_buyer_greeting(
@@ -576,6 +586,8 @@ async def telegram_webhook(
                 ),
                 "documents": [],
             }
+        elif known_buyer is None:
+            result = {"text": _temporary_error_text(greeting_lang), "documents": []}
         else:
             await clear_session("telegram", chat_id)
             session = new_session(company_code=tenant.get("company_code"))
@@ -583,17 +595,21 @@ async def telegram_webhook(
     elif _ORDER_PDF_RE.match(text):
         order_name = session.get("last_sales_order_name")
         if order_name:
-            order = await lc.get_sales_order(tenant["company_code"], order_name)
-            result = {
-                "text": "",
-                "documents": [
-                    {
-                        "type": "sales_order_pdf",
-                        "url": order.get("order_print_url"),
-                        "filename": f"{order.get('name') or 'sales-order'}.pdf",
-                    }
-                ],
-            }
+            try:
+                order = await lc.get_sales_order(tenant["company_code"], order_name)
+                result = {
+                    "text": "",
+                    "documents": [
+                        {
+                            "type": "sales_order_pdf",
+                            "url": order.get("order_print_url"),
+                            "filename": f"{order.get('name') or 'sales-order'}.pdf",
+                        }
+                    ],
+                }
+            except Exception:
+                logger.exception("Telegram order PDF lookup failed for %s", order_name)
+                result = {"text": _temporary_error_text(greeting_lang), "documents": []}
         else:
             result = {
                 "text": "В этой переписке пока нет активного заказа." if greeting_lang == "ru" else "There is no active order in this chat yet.",

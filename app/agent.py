@@ -1166,20 +1166,24 @@ async def _maybe_prefetch_catalog_context(
         return None
 
     inputs = {"item_name": search_term}
-    result_str = await execute_tool(
-        name="get_product_catalog",
-        inputs=inputs,
-        company_code=company_code,
-        erp_customer_id=session.get("erp_customer_id"),
-        active_sales_order_name=session.get("last_sales_order_name"),
-        current_lang=current_lang,
-        user_text=user_text,
-        channel=channel,
-        channel_uid=channel_uid,
-        lc=lc,
-        ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
-        lead_profile=lead_profile,
-    )
+    try:
+        result_str = await execute_tool(
+            name="get_product_catalog",
+            inputs=inputs,
+            company_code=company_code,
+            erp_customer_id=session.get("erp_customer_id"),
+            active_sales_order_name=session.get("last_sales_order_name"),
+            current_lang=current_lang,
+            user_text=user_text,
+            channel=channel,
+            channel_uid=channel_uid,
+            lc=lc,
+            ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
+            lead_profile=lead_profile,
+        )
+    except Exception as exc:
+        logger.warning("Catalog prefetch failed for %s/%s: %s", channel, channel_uid, exc)
+        return None
     try:
         parsed_result = json.loads(result_str)
     except json.JSONDecodeError:
@@ -1269,20 +1273,24 @@ async def _maybe_prefetch_availability_context(
         return None
 
     inputs = {"item_code": item_code}
-    result_str = await execute_tool(
-        name="get_item_availability",
-        inputs=inputs,
-        company_code=company_code,
-        erp_customer_id=session.get("erp_customer_id"),
-        active_sales_order_name=session.get("last_sales_order_name"),
-        current_lang=current_lang,
-        user_text=user_text,
-        channel=channel,
-        channel_uid=channel_uid,
-        lc=lc,
-        ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
-        lead_profile=lead_profile,
-    )
+    try:
+        result_str = await execute_tool(
+            name="get_item_availability",
+            inputs=inputs,
+            company_code=company_code,
+            erp_customer_id=session.get("erp_customer_id"),
+            active_sales_order_name=session.get("last_sales_order_name"),
+            current_lang=current_lang,
+            user_text=user_text,
+            channel=channel,
+            channel_uid=channel_uid,
+            lc=lc,
+            ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
+            lead_profile=lead_profile,
+        )
+    except Exception as exc:
+        logger.warning("Availability prefetch failed for %s/%s: %s", channel, channel_uid, exc)
+        return None
     try:
         parsed_result = json.loads(result_str)
     except json.JSONDecodeError:
@@ -1382,20 +1390,24 @@ async def _maybe_prefetch_order_status_context(
         return None
 
     inputs = {"sales_order_name": active_order_name}
-    result_str = await execute_tool(
-        name="get_sales_order_status",
-        inputs=inputs,
-        company_code=company_code,
-        erp_customer_id=session.get("erp_customer_id"),
-        active_sales_order_name=active_order_name,
-        current_lang=current_lang,
-        user_text=user_text,
-        channel=channel,
-        channel_uid=channel_uid,
-        lc=lc,
-        ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
-        lead_profile=lead_profile,
-    )
+    try:
+        result_str = await execute_tool(
+            name="get_sales_order_status",
+            inputs=inputs,
+            company_code=company_code,
+            erp_customer_id=session.get("erp_customer_id"),
+            active_sales_order_name=active_order_name,
+            current_lang=current_lang,
+            user_text=user_text,
+            channel=channel,
+            channel_uid=channel_uid,
+            lc=lc,
+            ai_policy=tenant.get("ai_policy") if isinstance(tenant.get("ai_policy"), dict) else None,
+            lead_profile=lead_profile,
+        )
+    except Exception as exc:
+        logger.warning("Order status prefetch failed for %s/%s: %s", channel, channel_uid, exc)
+        return None
     try:
         parsed_result = json.loads(result_str)
     except json.JSONDecodeError:
