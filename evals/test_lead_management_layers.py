@@ -204,6 +204,50 @@ class LeadManagementLayersTests(unittest.TestCase):
         self.assertEqual(profile.get("product_interest"), "laptop")
         self.assertEqual(profile.get("need"), "laptop")
 
+    def test_llm_service_target_resolves_current_order_without_phrase_list(self) -> None:
+        profile = update_lead_profile_from_message(
+            current_profile={
+                "status": "order_created",
+                "target_order_id": "SO-1",
+            },
+            user_text="please send it",
+            stage="service",
+            behavior_class="service_request",
+            intent="service_request",
+            customer_identified=True,
+            active_order_name="SO-1",
+            llm_state_update={
+                "service_request_target": "sales_order_pdf",
+                "order_target_reference": "current_order",
+            },
+        )
+        self.assertEqual(profile.get("service_request_target"), "sales_order_pdf")
+        self.assertEqual(profile.get("target_order_id"), "SO-1")
+
+    def test_llm_order_correction_target_resolves_current_order_without_regex_phrase(self) -> None:
+        profile = update_lead_profile_from_message(
+            current_profile={
+                "status": "order_created",
+                "target_order_id": "SO-1",
+            },
+            user_text="please fix it there",
+            stage="service",
+            behavior_class="service_request",
+            intent="service_request",
+            customer_identified=True,
+            active_order_name="SO-1",
+            llm_state_update={
+                "service_request_target": "order_correction",
+                "order_target_reference": "current_order",
+                "order_correction_type": "quantity",
+                "correction_target_text": "Laptop qty 10",
+            },
+        )
+        self.assertEqual(profile.get("target_order_id"), "SO-1")
+        self.assertEqual(profile.get("order_correction_status"), "requested")
+        self.assertEqual(profile.get("correction_type"), "quantity")
+        self.assertEqual(profile.get("correction_target_text"), "Laptop qty 10")
+
 
 if __name__ == "__main__":
     unittest.main()

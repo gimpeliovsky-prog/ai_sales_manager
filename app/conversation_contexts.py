@@ -17,9 +17,11 @@ CONTEXT_TYPES = {
 OPEN_CONTEXT_STATUSES = {"open", "waiting_customer", "waiting_internal", "ready_to_execute"}
 _MAX_CONTEXT_EVENTS = 200
 _ORDER_EDIT_FIELDS = {
+    "service_request_target",
     "order_correction_status",
     "target_order_id",
     "correction_type",
+    "correction_target_text",
     "correction_requested_at",
     "correction_confirmed_at",
     "correction_applied_at",

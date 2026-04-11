@@ -98,8 +98,10 @@ LEAD_PROGRESS_FIELDS = {
     "quote_sent_at",
     "quote_accepted_at",
     "quote_rejected_at",
+    "service_request_target",
     "order_correction_status",
     "correction_type",
+    "correction_target_text",
     "correction_requested_at",
     "correction_confirmed_at",
     "correction_applied_at",
@@ -115,6 +117,7 @@ _ITEM_QTY_SEGMENT_RE = re.compile(r"^\s*(?P<name>.+?)\s+(?P<qty>\d+(?:[.,]\d+)?)
 _TOKEN_RE = re.compile(r"[^\W\d_]+(?:[-'][^\W\d_]+)*", re.UNICODE)
 _CONTACT_PHONE_RE = re.compile(r"(?:\+?\d[\d\s().-]{7,}\d)")
 _CONTACT_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b")
+_ORDER_NAME_RE = re.compile(r"\b(?:SAL-ORD-\d{4}-\d+|SO-\d+)\b", re.IGNORECASE)
 _CURRENCY_RE = re.compile(r"[$€₪£¥₽]|(?:\b(?:usd|eur|ils|nis|rub|aed|sar)\b)", re.IGNORECASE)
 
 # Lead-management lexicon data is loaded from app/lexicons/lead_management/*.json.
@@ -216,6 +219,7 @@ def empty_lead_profile() -> dict[str, Any]:
         "quote_sent_at": None,
         "quote_accepted_at": None,
         "quote_rejected_at": None,
+        "service_request_target": None,
         "quote_last_actor_id": None,
         "quote_last_comment": None,
         "quote_last_updated_at": None,
@@ -230,6 +234,7 @@ def empty_lead_profile() -> dict[str, Any]:
         "order_correction_status": "none",
         "target_order_id": None,
         "correction_type": None,
+        "correction_target_text": None,
         "correction_requested_at": None,
         "correction_confirmed_at": None,
         "correction_applied_at": None,
@@ -758,6 +763,85 @@ def _order_correction_requested(*, user_text: str, intent: str, active_order_nam
     if _signal_matches(user_text, "order_correction", config):
         return True
     return False
+
+
+def _normalize_service_request_target(value: Any) -> str | None:
+    target = str(value or "").strip()
+    if target in {"sales_order_pdf", "invoice", "order_status", "order_correction", "license", "subscription", "general_service"}:
+        return target
+    return None
+
+
+def _normalize_order_correction_type(value: Any) -> str | None:
+    correction_type = str(value or "").strip()
+    if correction_type in {"delivery_or_date", "quantity", "remove_item", "add_item", "general"}:
+        return correction_type
+    return None
+
+
+def _extract_order_reference(value: Any) -> str | None:
+    text = _clean_text(value, limit=120)
+    if not text:
+        return None
+    match = _ORDER_NAME_RE.search(text)
+    if match:
+        return match.group(0).upper()
+    return text
+
+
+def _resolve_order_target_reference(
+    *,
+    order_target_reference: Any,
+    current_profile: dict[str, Any],
+    active_order_name: str | None,
+) -> str | None:
+    reference = _extract_order_reference(order_target_reference)
+    if not reference:
+        return None
+    if _ORDER_NAME_RE.fullmatch(reference):
+        return reference
+    normalized_reference = reference.casefold().replace(" ", "_")
+    current_target = _clean_text(current_profile.get("target_order_id"), limit=120)
+    active_target = _clean_text(active_order_name, limit=120)
+    if normalized_reference in {"current_order", "active_order", "this_order", "last_order", "open_order", "draft_order", "current", "active", "this", "last"}:
+        return current_target or active_target
+    return None
+
+
+def _apply_model_runtime_target_hints(
+    *,
+    profile: dict[str, Any],
+    intent: str,
+    active_order_name: str | None,
+    llm_state_update: dict[str, Any] | None,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    llm_state = llm_state_update if isinstance(llm_state_update, dict) else {}
+    service_request_target = _normalize_service_request_target(llm_state.get("service_request_target"))
+    order_target_reference = _clean_text(llm_state.get("order_target_reference"), limit=120)
+    order_correction_type = _normalize_order_correction_type(llm_state.get("order_correction_type"))
+    correction_target_text = _clean_text(llm_state.get("correction_target_text"), limit=160)
+    resolved_order_target_id = _resolve_order_target_reference(
+        order_target_reference=order_target_reference,
+        current_profile=profile,
+        active_order_name=active_order_name,
+    )
+
+    if service_request_target:
+        profile["service_request_target"] = service_request_target
+    elif intent != "service_request" and not order_correction_type:
+        profile["service_request_target"] = None
+
+    if resolved_order_target_id and (
+        service_request_target in {"sales_order_pdf", "invoice", "order_status", "order_correction"}
+        or order_correction_type
+        or intent == "service_request"
+    ):
+        profile["target_order_id"] = resolved_order_target_id
+
+    if correction_target_text and order_correction_type:
+        profile["correction_target_text"] = correction_target_text
+
+    return service_request_target, resolved_order_target_id, order_correction_type, correction_target_text
 
 
 def _infer_separate_order_requested(
@@ -1414,12 +1498,17 @@ def _apply_order_branch_reducer(
     requested_items: list[dict[str, Any]],
     qty: float | None,
     extracted_uom: str | None,
+    resolved_order_target_id: str | None,
+    model_order_correction_type: str | None,
+    model_correction_target_text: str | None,
 ) -> None:
     if separate_order_requested:
         profile["separate_order_requested"] = True
         profile["order_correction_status"] = "none"
         profile["target_order_id"] = None
         profile["correction_type"] = None
+        profile["correction_target_text"] = None
+        profile["service_request_target"] = None
     elif correction_requested:
         profile["separate_order_requested"] = False
 
@@ -1441,10 +1530,13 @@ def _apply_order_branch_reducer(
         and not separate_order_requested
         and intent in {"order_detail", "add_to_order", "confirm_order"}
     )
-    if active_order_name and (correction_requested or correction_context_continues):
+    resolved_correction_order_id = resolved_order_target_id or active_order_name
+    if resolved_correction_order_id and (correction_requested or correction_context_continues):
         profile["order_correction_status"] = "requested"
-        profile["target_order_id"] = profile.get("target_order_id") or active_order_name
-        profile["correction_type"] = profile.get("correction_type") or _correction_type(user_text)
+        profile["target_order_id"] = profile.get("target_order_id") or resolved_correction_order_id
+        profile["correction_type"] = profile.get("correction_type") or model_order_correction_type or _correction_type(user_text)
+        if model_correction_target_text:
+            profile["correction_target_text"] = model_correction_target_text
         profile["correction_requested_at"] = profile.get("correction_requested_at") or now.isoformat()
         profile["next_action"] = "clarify_order_correction"
     elif separate_order_requested:
@@ -1502,6 +1594,7 @@ def _apply_message_signal_effects(
     customer_identified: bool,
     active_order_name: str | None,
     lead_config: dict[str, Any] | None = None,
+    llm_state_update: dict[str, Any] | None = None,
     now: datetime,
 ) -> dict[str, Any]:
     previous_correction_requested = str(profile.get("order_correction_status") or "").strip() == "requested"
@@ -1523,12 +1616,23 @@ def _apply_message_signal_effects(
     requested_items = _parse_requested_items(semantic_text)
     qty = _first_qty(semantic_text)
     extracted_uom = _extract_single_item_uom(semantic_text, lead_config)
+    (
+        model_service_request_target,
+        resolved_order_target_id,
+        model_order_correction_type,
+        model_correction_target_text,
+    ) = _apply_model_runtime_target_hints(
+        profile=profile,
+        intent=intent,
+        active_order_name=active_order_name,
+        llm_state_update=llm_state_update,
+    )
     correction_requested = _order_correction_requested(
         user_text=user_text,
         intent=intent,
-        active_order_name=active_order_name,
+        active_order_name=resolved_order_target_id or active_order_name,
         config=lead_config,
-    )
+    ) or bool((resolved_order_target_id or active_order_name) and (model_service_request_target == "order_correction" or model_order_correction_type))
     separate_order_requested = _infer_separate_order_requested(
         user_text=user_text,
         stage=stage,
@@ -1613,6 +1717,9 @@ def _apply_message_signal_effects(
         requested_items=requested_items,
         qty=qty,
         extracted_uom=extracted_uom,
+        resolved_order_target_id=resolved_order_target_id,
+        model_order_correction_type=model_order_correction_type,
+        model_correction_target_text=model_correction_target_text,
     )
     _apply_commercial_signal_reducer(
         profile=profile,
@@ -1934,6 +2041,7 @@ def update_lead_profile_from_message(
         customer_identified=customer_identified,
         active_order_name=active_order_name,
         lead_config=lead_config,
+        llm_state_update=llm_state_update,
         now=resolved_now,
     )
 
@@ -2095,9 +2203,11 @@ def build_lead_event_payload(
         "quote_sent_at": profile.get("quote_sent_at"),
         "quote_accepted_at": profile.get("quote_accepted_at"),
         "quote_rejected_at": profile.get("quote_rejected_at"),
+        "service_request_target": profile.get("service_request_target"),
         "order_correction_status": profile.get("order_correction_status"),
         "target_order_id": profile.get("target_order_id"),
         "correction_type": profile.get("correction_type"),
+        "correction_target_text": profile.get("correction_target_text"),
         "correction_requested_at": profile.get("correction_requested_at"),
         "correction_confirmed_at": profile.get("correction_confirmed_at"),
         "correction_applied_at": profile.get("correction_applied_at"),

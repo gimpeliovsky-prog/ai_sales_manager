@@ -249,9 +249,11 @@ def _lead_profile_lines(lead_profile: dict[str, Any] | None, *, stage: str | Non
         ("decision_status", "Decision status"),
     ]
     order_fields = [
+        ("service_request_target", "Service request target"),
         ("order_correction_status", "Order correction status"),
         ("target_order_id", "Target order id for correction"),
         ("correction_type", "Order correction type"),
+        ("correction_target_text", "Order correction target"),
         ("active_order_state", "Active order state"),
         ("active_order_can_modify", "Active order can modify"),
     ]

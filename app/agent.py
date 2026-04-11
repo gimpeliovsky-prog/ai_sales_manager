@@ -1751,7 +1751,7 @@ async def _classify_state_with_llm(
         "model": model,
         "instructions": (
             "Classify the customer's latest message for sales-runtime state update. "
-            "Return only compact JSON with keys: intent, signal_type, signal_emotion, signal_preserves_deal, behavior_class, confidence, next_action, lead_patch, catalog_search_term, reason. "
+            "Return only compact JSON with keys: intent, signal_type, signal_emotion, signal_preserves_deal, behavior_class, confidence, next_action, lead_patch, catalog_search_term, service_request_target, order_target_reference, order_correction_type, correction_target_text, reason. "
             "intent must be one of: low_signal, small_talk, find_product, browse_catalog, order_detail, confirm_order, add_to_order, service_request, human_handoff. "
             "signal_type must be one of: deal_progress, small_talk, price_objection, discount_request, analogs_request, comparison_request, delivery_question, availability_question, topic_shift, frustration, confirmation, service_request, stalling, resume_previous_context, low_signal, handoff_request. "
             "signal_emotion must be one of: neutral, positive, impatient, skeptical. "
@@ -1761,6 +1761,11 @@ async def _classify_state_with_llm(
             "lead_patch may include only these keys when clearly supported by the message and context: product_interest, quantity, uom, urgency, delivery_need, price_sensitivity, decision_status. "
             "catalog_search_term must be the minimal catalog lookup phrase for the current product request, with hedges, politeness, uncertainty words, and non-product framing removed. "
             "For example, from 'maybe a laptop' return catalog_search_term='laptop'; from 'probably gaming laptop' return 'gaming laptop'; from non-product messages return null or empty. "
+            "service_request_target must be one of: sales_order_pdf, invoice, order_status, order_correction, license, subscription, general_service. "
+            "Use service_request_target only for operational/service asks. "
+            "order_target_reference should be the minimal order reference mentioned or implied by the message, such as an explicit sales order name or a compact pointer like 'current_order' or 'last_order'. "
+            "order_correction_type must be one of: delivery_or_date, quantity, remove_item, add_item, general. Use it only when the customer is asking to change an existing order. "
+            "correction_target_text should be the minimal changed subject for an order correction, such as the affected item, delivery date, or quantity target. "
             "quantity must be a numeric value or null, never a string with unit words or approximations. "
             "Use next_action to express the single best next sales step after this message. "
             "Use small_talk for greetings, social check-ins, or politeness in any language when there is no product, service, or order request yet. "
@@ -1801,6 +1806,11 @@ async def _classify_state_with_llm(
                             "catalog_lookup_match_count": lead_profile.get("catalog_lookup_match_count"),
                             "catalog_item_code": lead_profile.get("catalog_item_code"),
                             "catalog_item_name": lead_profile.get("catalog_item_name"),
+                            "target_order_id": lead_profile.get("target_order_id"),
+                            "service_request_target": lead_profile.get("service_request_target"),
+                            "order_correction_status": lead_profile.get("order_correction_status"),
+                            "correction_type": lead_profile.get("correction_type"),
+                            "correction_target_text": lead_profile.get("correction_target_text"),
                         },
                         "recent_messages": recent_messages,
                     },

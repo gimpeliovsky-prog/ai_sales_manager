@@ -46,6 +46,16 @@ class LlmStateUpdaterTests(unittest.TestCase):
         self.assertTrue(parsed["valid"])
         self.assertEqual(parsed["catalog_search_term"], "gaming laptop")
 
+    def test_parse_state_update_accepts_service_and_order_targets(self) -> None:
+        parsed = parse_llm_state_update(
+            '{"intent":"service_request","signal_type":"service_request","behavior_class":"service_request","confidence":0.84,"service_request_target":"sales_order_pdf","order_target_reference":"current_order","order_correction_type":"quantity","correction_target_text":"Laptop qty 10"}'
+        )
+        self.assertTrue(parsed["valid"])
+        self.assertEqual(parsed["service_request_target"], "sales_order_pdf")
+        self.assertEqual(parsed["order_target_reference"], "current_order")
+        self.assertEqual(parsed["order_correction_type"], "quantity")
+        self.assertEqual(parsed["correction_target_text"], "Laptop qty 10")
+
 
 if __name__ == "__main__":
     unittest.main()

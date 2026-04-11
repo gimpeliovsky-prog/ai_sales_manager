@@ -75,6 +75,24 @@ ALLOWED_NEXT_ACTIONS = {
     "recommend_next_step",
 }
 
+ALLOWED_SERVICE_REQUEST_TARGETS = {
+    "sales_order_pdf",
+    "invoice",
+    "order_status",
+    "order_correction",
+    "license",
+    "subscription",
+    "general_service",
+}
+
+ALLOWED_ORDER_CORRECTION_TYPES = {
+    "delivery_or_date",
+    "quantity",
+    "remove_item",
+    "add_item",
+    "general",
+}
+
 SAFE_PATCH_FIELDS = {
     "product_interest",
     "quantity",
@@ -152,6 +170,10 @@ def parse_llm_state_update(text: str) -> dict[str, Any]:
     preserves_deal = payload.get("signal_preserves_deal")
     lead_patch = payload.get("lead_patch") if isinstance(payload.get("lead_patch"), dict) else {}
     catalog_search_term = _clean_text(payload.get("catalog_search_term"))
+    service_request_target = str(payload.get("service_request_target") or "").strip()
+    order_target_reference = _clean_text(payload.get("order_target_reference"))
+    order_correction_type = str(payload.get("order_correction_type") or "").strip()
+    correction_target_text = _clean_text(payload.get("correction_target_text"))
 
     sanitized_patch: dict[str, Any] = {}
     for key in SAFE_PATCH_FIELDS:
@@ -187,12 +209,29 @@ def parse_llm_state_update(text: str) -> dict[str, Any]:
     if signal_emotion not in ALLOWED_SIGNAL_EMOTIONS:
         signal_emotion = ""
     preserves_deal = bool(preserves_deal) if isinstance(preserves_deal, bool) else None
+    if service_request_target not in ALLOWED_SERVICE_REQUEST_TARGETS:
+        service_request_target = ""
+    if order_correction_type not in ALLOWED_ORDER_CORRECTION_TYPES:
+        order_correction_type = ""
 
     if catalog_search_term and looks_like_small_talk(catalog_search_term):
         catalog_search_term = None
+    if correction_target_text and looks_like_small_talk(correction_target_text):
+        correction_target_text = None
 
     return {
-        "valid": bool(intent or behavior_class or sanitized_patch or next_action or signal_type),
+        "valid": bool(
+            intent
+            or behavior_class
+            or sanitized_patch
+            or next_action
+            or signal_type
+            or catalog_search_term
+            or service_request_target
+            or order_target_reference
+            or order_correction_type
+            or correction_target_text
+        ),
         "intent": intent or None,
         "behavior_class": behavior_class or None,
         "next_action": next_action or None,
@@ -202,5 +241,9 @@ def parse_llm_state_update(text: str) -> dict[str, Any]:
         "confidence": max(0.0, min(1.0, confidence)),
         "lead_patch": sanitized_patch,
         "catalog_search_term": catalog_search_term,
+        "service_request_target": service_request_target or None,
+        "order_target_reference": order_target_reference,
+        "order_correction_type": order_correction_type or None,
+        "correction_target_text": correction_target_text,
         "reason": _clean_text(payload.get("reason")),
     }
